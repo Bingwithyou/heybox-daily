@@ -6,7 +6,7 @@ import path from 'node:path';
 import { constants, generateKeyPairSync, privateDecrypt } from 'node:crypto';
 import { HeyboxApiError, HeyboxClient } from '../dist/client.js';
 import { saveConfig } from '../dist/config.js';
-import { createLoginConfig, encryptPhone, normalizePhone, runSmsLogin, verifyLoginCode } from '../dist/login.js';
+import { createLoginConfig, encryptPhone, normalizePhone, runSmsLogin, sendLoginCode, verifyLoginCode } from '../dist/login.js';
 import type { Config, Query } from '../dist/types.js';
 
 type LoginOptions = Parameters<typeof runSmsLogin>[0];
@@ -197,4 +197,39 @@ test('a required human challenge is distinguished from a rejected SMS code witho
   const ordinary = new HeyboxApiError('/account/login_code/', 'failed', '验证码错误');
   assert.equal(ordinary.captchaRequired, false);
   assert.equal(ordinary.retryCode, true);
+});
+
+test('human verification continues the original SMS or login request with proof in the query', async () => {
+  const config = createLoginConfig(token);
+  const calls: Array<{ endpoint: string; extra: Query | undefined; config: Config }> = [];
+  const captcha = { ticket: 'verified-ticket', randstr: 'verified-randstr' };
+  const options = { captcha, clientFactory: (current: Config) => clientWith(async (endpoint, extra, body) => {
+    calls.push({ endpoint, extra, config: current });
+    assert.ok(body?.get('phone_num'));
+    assert.equal(body?.get('ticket'), null);
+    return endpoint.includes('get_login_code') ? {} : loginResult;
+  }) };
+  await sendLoginCode(config, '13800138000', options);
+  await verifyLoginCode(config, '13800138000', '1234', options);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    assert.equal(call.config, config);
+    assert.equal(call.extra?.captcha_type, 'confirm');
+    assert.equal(call.extra?.ticket, captcha.ticket);
+    assert.equal(call.extra?.randstr, captcha.randstr);
+  }
+  assert.equal(calls[1].extra?.code, '1234');
+});
+
+test('only a valid public appid is kept from a human-challenge response', async () => {
+  for (const appid of ['1234567890', 1234567890, 'https://attacker.invalid', 'private-token']) {
+    const client = new HeyboxClient(createLoginConfig(token), { signer: () => ({ hkey: 'signed', _rnd: '14:1', nonce: 'nonce', _time: '1' }),
+      fetchImpl: async () => Response.json({ status: 'show_captcha', msg: '请先验证', result: { appid, secret: 'private-fixture' } }) });
+    await assert.rejects(client.native('/account/get_login_code/'), (error: unknown) => {
+      assert.ok(error instanceof HeyboxApiError);
+      assert.equal(error.captchaAppId, /^\d+$/.test(String(appid)) ? '1234567890' : undefined);
+      assert.ok(!JSON.stringify(error).includes('private-fixture'));
+      return true;
+    });
+  }
 });

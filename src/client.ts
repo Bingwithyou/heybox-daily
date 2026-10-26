@@ -10,7 +10,8 @@ interface ApiResponse<T> { status?: string; msg?: string; result: T }
 export class HeyboxApiError extends Error {
   readonly retryCode: boolean;
   readonly captchaRequired: boolean;
-  constructor(endpoint: string, status: string | undefined, detail = '') {
+  readonly captchaAppId?: string;
+  constructor(endpoint: string, status: string | undefined, detail = '', result?: unknown) {
     const expired = /验证码.*(?:过期|失效)/.test(detail);
     const limited = /频繁|次数.*限制/.test(detail);
     const wrongCode = /验证码.*(?:错误|不正确)/.test(detail);
@@ -19,6 +20,8 @@ export class HeyboxApiError extends Error {
     const reason = captchaRequired ? '小黑盒要求完成人机验证后才能继续登录' : expired ? '验证码已过期，请重新登录获取新的验证码' : limited ? '请求过于频繁，请稍后再试' : wrongCode ? '验证码不正确，请重新输入' : `接口未成功：${endpoint}（${safeStatus}）`;
     super(reason);
     this.captchaRequired = captchaRequired;
+    const appId = result && typeof result === 'object' && 'appid' in result ? String(result.appid) : '';
+    if (captchaRequired && /^\d{1,32}$/.test(appId)) this.captchaAppId = appId;
     this.retryCode = endpoint === '/account/login_code/' && status === 'failed' && !expired && !limited;
   }
 }
@@ -48,7 +51,7 @@ export class HeyboxClient implements TaskClient {
     if (data.status === 'relogin') throw new Error('APP 登录已过期，请重新运行登录命令');
     if (data.status === 'lack_token') throw new Error('设备令牌无效，请重新运行登录命令');
     // Only known error categories are displayed; raw replies may contain account data.
-    if (data.status !== 'ok') throw new HeyboxApiError(endpoint, data.status, typeof data.msg === 'string' ? data.msg : '');
+    if (data.status !== 'ok') throw new HeyboxApiError(endpoint, data.status, typeof data.msg === 'string' ? data.msg : '', data.result);
     return data.result;
   }
 

@@ -21,7 +21,7 @@ test('child execution has a hard timeout and does not echo credentials on failur
   });
 });
 test('the login server requires service authentication before parsing or calling upstream', async () => {
-  const store = new ChallengeStore({ begin: async () => assert.fail('unexpected login'), verify: async () => assert.fail('unexpected verify') });
+  const store = new ChallengeStore({ begin: async () => assert.fail('unexpected login'), send: async () => assert.fail('unexpected captcha'), verify: async () => assert.fail('unexpected verify') });
   const server = createRunnerServer(store, 'a'.repeat(64), Buffer.alloc(32).toString('base64'));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');

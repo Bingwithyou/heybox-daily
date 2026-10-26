@@ -25,9 +25,21 @@ export const outcomeSchema = z.object({ status: z.enum(['completed', 'failed', '
 export type Outcome = z.infer<typeof outcomeSchema>;
 export const beginSchema = z.object({ phone: phoneSchema, binding: bindingSchema });
 export const verifySchema = z.object({ challenge: idSchema, code: codeSchema, binding: bindingSchema });
+export const captchaAppIdSchema = z.string().regex(/^\d{1,32}$/);
+export const captchaProofSchema = z.object({
+  ticket: z.string().min(1).max(2048).refine(value => !/[^\x21-\x7e]/.test(value) && !/^trerror_/i.test(value)),
+  randstr: z.string().min(1).max(256).refine(value => !/[^\x21-\x7e]/.test(value) && !/^trerror_/i.test(value)),
+});
+export type CaptchaProof = z.infer<typeof captchaProofSchema>;
+export const completeCaptchaSchema = captchaProofSchema.extend({ challenge: idSchema, binding: bindingSchema });
 export const finishSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema, result: outcomeSchema });
 export const heartbeatSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema });
-export const beginResultSchema = z.object({ challenge: idSchema, expiresAt: z.number(), retryAfter: z.number() });
+export const sentResultSchema = z.object({ status: z.literal('sent'), challenge: idSchema, expiresAt: z.number(), retryAfter: z.number(), message: z.string().max(120).optional() });
+export const captchaResultSchema = z.object({ status: z.literal('captcha'), challenge: idSchema, expiresAt: z.number(), appId: captchaAppIdSchema });
+export const beginResultSchema = z.discriminatedUnion('status', [sentResultSchema, captchaResultSchema]);
+export type LoginProgress = z.infer<typeof beginResultSchema>;
+export const runnerLoginResultSchema = z.discriminatedUnion('status', [sentResultSchema, captchaResultSchema,
+  z.object({ status: z.literal('authenticated'), credential: credentialSchema })]);
 export const loginFailureSchema = z.object({ code: z.literal('captcha_required') });
 export class LoginFailure extends Error {
   readonly code = 'captcha_required' as const;

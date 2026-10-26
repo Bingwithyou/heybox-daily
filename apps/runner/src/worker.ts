@@ -1,10 +1,10 @@
-import { prepareLogin, sendLoginCode, verifyLoginCode } from 'heybox-daily/login';
 import { HeyboxApiError, HeyboxClient } from 'heybox-daily/client';
 import { inspect, runDaily } from 'heybox-daily/tasks';
-import type { Config, Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
+import type { Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
 import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot } from '@heybox/contracts';
 import { decryptCredential } from './crypto.ts';
 import { fileURLToPath } from 'node:url';
+import { loginStep, type LoginInput } from './login.ts';
 
 export function failureCategory(error: unknown) {
   if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';
@@ -54,9 +54,8 @@ async function daily(job: Job): Promise<Outcome> {
 async function main() {
   let data = '';
   for await (const chunk of process.stdin) { data += chunk; if (data.length > 16_384) throw new Error('请求过大'); }
-  const input = JSON.parse(data) as { action: string; phone: string; code: string; config: Config; job: Job };
-  if (input.action === 'begin') { const config = await prepareLogin(); await sendLoginCode(config, input.phone); return config; }
-  if (input.action === 'verify') return verifyLoginCode(input.config, input.phone, input.code);
+  const input = JSON.parse(data) as LoginInput | { action: 'daily'; job: Job };
+  if (input.action === 'begin' || input.action === 'send' || input.action === 'verify') return loginStep(input);
   if (input.action === 'daily') return daily(jobSchema.parse(input.job));
   throw new Error('操作无效');
 }

@@ -1,7 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
-import type { Config } from 'heybox-daily/types';
 import { jobSchema, outcomeSchema, type Outcome } from '@heybox/contracts';
-import { ChallengeStore } from './challenges.ts';
+import { ChallengeStore, type LoginStep } from './challenges.ts';
 import { createRunnerServer } from './server.ts';
 import { runChild } from './process.ts';
 
@@ -10,8 +9,9 @@ const key = process.env.CREDENTIAL_KEY || '';
 const website = process.env.WEBSITE_URL || '';
 if (token.length < 32 || Buffer.from(key, 'base64').length !== 32 || !/^https?:\/\//.test(website)) throw new Error('请配置 RUNNER_SERVICE_TOKEN、CREDENTIAL_KEY 和 WEBSITE_URL');
 if (!website.startsWith('https://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/)/.test(website)) throw new Error('WEBSITE_URL 必须使用 HTTPS');
-const store = new ChallengeStore({ begin: phone => runChild<Config>({ action: 'begin', phone }, 120_000),
-  verify: (config, phone, code) => runChild<Config>({ action: 'verify', config, phone, code }, 120_000) });
+const store = new ChallengeStore({ begin: phone => runChild<LoginStep>({ action: 'begin', phone }, 120_000),
+  send: (config, phone, proof) => runChild<LoginStep>({ action: 'send', config, phone, proof }, 120_000),
+  verify: (config, phone, code, proof) => runChild<LoginStep>({ action: 'verify', config, phone, code, proof }, 120_000) });
 const server = createRunnerServer(store, token, key);
 server.listen(Number(process.env.PORT || 8788), process.env.HOST || '127.0.0.1', () => console.log('Heybox runner ready'));
 let stopping = false;

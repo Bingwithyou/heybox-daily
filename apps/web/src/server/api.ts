@@ -10,6 +10,7 @@ const rpc = new RPCHandler(router);
 const authPaths = new Set([
   "/api/auth/heybox/send-code",
   "/api/auth/heybox/verify-code",
+  "/api/auth/heybox/complete-captcha",
   "/api/auth/get-session",
   "/api/auth/sign-out",
 ]);

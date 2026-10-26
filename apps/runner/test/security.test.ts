@@ -18,17 +18,19 @@ test('credentials authenticate account/version and reject tampering or a differe
 });
 test('a challenge is browser bound, cannot verify concurrently, and is consumed once', async () => {
   let release!: () => void;
-  const store = new ChallengeStore({ begin: async () => config, verify: async () => { await new Promise<void>(resolve => release = resolve); return config; } });
+  const store = new ChallengeStore({ begin: async () => ({ status: 'sent', config }), send: async () => assert.fail('unexpected captcha'),
+    verify: async () => { await new Promise<void>(resolve => release = resolve); return { status: 'authenticated', config }; } });
   const start = await store.begin('+8613800138000', 'a'.repeat(64));
   await assert.rejects(store.verify(start.challenge, '1111', 'b'.repeat(64)), /挑战/);
   const first = store.verify(start.challenge, '1111', 'a'.repeat(64));
   await assert.rejects(store.verify(start.challenge, '1111', 'a'.repeat(64)), /处理中/);
-  release(); assert.deepEqual(await first, config);
+  release(); assert.deepEqual(await first, { status: 'authenticated', config });
   await assert.rejects(store.verify(start.challenge, '1111', 'a'.repeat(64)), /挑战/);
 });
 test('expiry and three failed attempts discard the challenge', async () => {
   let now = 0; let attempts = 0;
-  const store = new ChallengeStore({ begin: async () => config, verify: async () => { attempts++; throw new Error('wrong'); }, now: () => now });
+  const store = new ChallengeStore({ begin: async () => ({ status: 'sent', config }), send: async () => assert.fail('unexpected captcha'),
+    verify: async () => { attempts++; throw new Error('wrong'); }, now: () => now });
   const expired = await store.begin('+8613800138000', 'a'.repeat(64));
   now = expired.expiresAt + 1;
   await assert.rejects(store.verify(expired.challenge, '1111', 'a'.repeat(64)), /挑战/);

@@ -5,7 +5,7 @@ import { getDeviceToken } from './device-token.js';
 import { androidBase64 } from './report.js';
 import { snapshot } from './tasks.js';
 import { accountProfile } from './profile.js';
-import type { Config } from './types.js';
+import type { Config, Query } from './types.js';
 
 // Public login encryption key returned by the verified APP's NDKTools.getrsakey.
 const loginKey = `-----BEGIN PUBLIC KEY-----
@@ -22,9 +22,17 @@ interface LoginResult {
 }
 type LoginClient = Pick<HeyboxClient, 'native' | 'tasks' | 'signState'>;
 export interface LoginDependencies {
+  captcha?: { ticket: string; randstr: string };
   getDeviceToken?: () => Promise<string>;
   clientFactory?: (config: Config) => LoginClient;
   preflight?: (config: Config) => void;
+}
+function captchaQuery(proof: LoginDependencies['captcha']): Query {
+  if (!proof) return {};
+  if (!proof.ticket.length || proof.ticket.length > 2048 || !proof.randstr.length || proof.randstr.length > 256
+      || /[^\x21-\x7e]/.test(proof.ticket + proof.randstr)
+      || /^trerror_/i.test(proof.ticket) || /^trerror_/i.test(proof.randstr)) throw new Error('人机验证凭据无效，请重新验证');
+  return { captcha_type: 'confirm', ticket: proof.ticket, randstr: proof.randstr };
 }
 interface LoginOptions extends LoginDependencies {
   ask(question: string): Promise<string>;
@@ -64,13 +72,13 @@ export async function prepareLogin(options: LoginDependencies = {}) {
 
 export async function sendLoginCode(config: Config, phone: string, options: LoginDependencies = {}) {
   const client = (options.clientFactory || (value => new HeyboxClient(value)))(config);
-  await client.native('/account/get_login_code/', {}, new URLSearchParams({ phone_num: encryptPhone(normalizePhone(phone)) }));
+  await client.native('/account/get_login_code/', captchaQuery(options.captcha), new URLSearchParams({ phone_num: encryptPhone(normalizePhone(phone)) }));
 }
 
 export async function verifyLoginCode(config: Config, phone: string, code: string, options: LoginDependencies = {}) {
   if (!/^\d{4,8}$/.test(code)) throw new Error('验证码应为 4 至 8 位数字');
   const factory = options.clientFactory || (value => new HeyboxClient(value));
-  const result = await factory(config).native<LoginResult>('/account/login_code/', { code, is_new_device: '1' },
+  const result = await factory(config).native<LoginResult>('/account/login_code/', { code, is_new_device: '1', ...captchaQuery(options.captcha) },
     new URLSearchParams({ phone_num: encryptPhone(normalizePhone(phone)) }));
   const account = String(result?.profile?.heybox_id ?? '');
   if (!/^\d+$/.test(account) || account !== String(result?.account_detail?.userid) || !result?.pkey) {

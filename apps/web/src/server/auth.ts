@@ -9,7 +9,8 @@ import {
   codeSchema,
   idSchema,
   beginResultSchema,
-  credentialSchema,
+  runnerLoginResultSchema,
+  captchaProofSchema,
   LoginFailure,
 } from "@heybox/contracts";
 import * as schema from "./schema.ts";
@@ -25,6 +26,32 @@ export function createAuth(env: Env) {
     if (!(await store.quota(await privateKey(value, env.BETTER_AUTH_SECRET), count, window))) {
       throw new APIError("TOO_MANY_REQUESTS", { message: "请求过于频繁，请稍后再试" });
     }
+  }
+  async function finish(
+    ctx: Parameters<typeof setSessionCookie>[0],
+    result: z.infer<typeof runnerLoginResultSchema>,
+  ) {
+    if (result.status !== "authenticated") return ctx.json(result);
+    const userId = await store.enroll(result.credential);
+    const user = await ctx.context.internalAdapter.findUserById(userId);
+    if (!user) throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
+    const session = await ctx.context.internalAdapter.createSession(user.id);
+    if (!session)
+      throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
+    await setSessionCookie(ctx, { session, user });
+    ctx.setCookie(cookie, "", {
+      httpOnly: true,
+      secure: cookie.startsWith("__Host-"),
+      sameSite: "strict",
+      path: "/",
+      maxAge: 0,
+    });
+    return ctx.json({
+      status: "authenticated",
+      account: result.credential.account,
+      nickname: user.name,
+      avatar: user.image || null,
+    });
   }
   const heyboxPlugin = {
     id: "heybox",
@@ -75,9 +102,9 @@ export function createAuth(env: Env) {
             30,
             300_000,
           );
-          let credential: z.infer<typeof credentialSchema>;
+          let result: z.infer<typeof runnerLoginResultSchema>;
           try {
-            credential = credentialSchema.parse(
+            result = runnerLoginResultSchema.parse(
               await runnerRequest(env, "/login/verify", { ...ctx.body, binding }),
             );
           } catch (error) {
@@ -87,26 +114,34 @@ export function createAuth(env: Env) {
               message: "验证码错误、已过期或小黑盒暂时不可用，请稍后重试",
             });
           }
-          const userId = await store.enroll(credential);
-          const user = await ctx.context.internalAdapter.findUserById(userId);
-          if (!user)
-            throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
-          const session = await ctx.context.internalAdapter.createSession(user.id);
-          if (!session)
-            throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
-          await setSessionCookie(ctx, { session, user });
-          ctx.setCookie(cookie, "", {
-            httpOnly: true,
-            secure: cookie.startsWith("__Host-"),
-            sameSite: "strict",
-            path: "/",
-            maxAge: 0,
-          });
-          return ctx.json({
-            account: credential.account,
-            nickname: user.name,
-            avatar: user.image || null,
-          });
+          return finish(ctx, result);
+        },
+      ),
+      completeHeyboxCaptcha: createAuthEndpoint(
+        "/heybox/complete-captcha",
+        { method: "POST", body: captchaProofSchema.extend({ challenge: idSchema }) },
+        async (ctx) => {
+          const binding = ctx.getCookie(cookie);
+          if (!binding || !/^[a-f0-9]{64}$/.test(binding))
+            throw new APIError("BAD_REQUEST", { message: "登录已过期，请重新获取验证码" });
+          await limit(
+            `captcha:ip:${ctx.request?.headers.get("cf-connecting-ip") || "local"}`,
+            30,
+            300_000,
+          );
+          let result: z.infer<typeof runnerLoginResultSchema>;
+          try {
+            result = runnerLoginResultSchema.parse(
+              await runnerRequest(env, "/login/captcha", { ...ctx.body, binding }),
+            );
+          } catch (error) {
+            if (error instanceof LoginFailure)
+              throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
+            throw new APIError("BAD_REQUEST", {
+              message: "人机验证未通过、已过期或小黑盒暂时不可用，请重新验证",
+            });
+          }
+          return finish(ctx, result);
         },
       ),
     },

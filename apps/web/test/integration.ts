@@ -56,6 +56,74 @@ const challengeError = (await humanChallenge.json()) as { code: string; message:
 assert.equal(challengeError.code, "captcha_required");
 assert.match(challengeError.message, /人机验证/);
 assert.equal(guest.cookies.size, 0);
+const captchaBrowser = new Browser();
+const captchaStart = await captchaBrowser.auth("heybox/send-code", { phone: "13900000001" });
+assert.equal(captchaStart.status, 200);
+const captchaState = (await captchaStart.json()) as {
+  status: string;
+  challenge: string;
+  appId: string;
+};
+assert.equal(captchaState.status, "captcha");
+assert.equal(captchaState.appId, "1234567890");
+assert.ok(!JSON.stringify(captchaState).includes("integration-fixture"));
+const proof = {
+  challenge: captchaState.challenge,
+  ticket: "valid-ticket",
+  randstr: "valid-randstr",
+};
+assert.equal((await guest.auth("heybox/complete-captcha", proof)).status, 400);
+assert.equal(
+  (
+    await captchaBrowser.auth("heybox/verify-code", {
+      challenge: captchaState.challenge,
+      code: "123456",
+    })
+  ).status,
+  400,
+);
+assert.equal(
+  (
+    await captchaBrowser.auth("heybox/complete-captcha", {
+      ...proof,
+      ticket: "trerror_1001_fallback",
+    })
+  ).status,
+  400,
+);
+const captchaSent = await captchaBrowser.auth("heybox/complete-captcha", proof);
+assert.equal(captchaSent.status, 200);
+assert.equal(((await captchaSent.json()) as { status: string }).status, "sent");
+assert.equal((await captchaBrowser.auth("heybox/complete-captcha", proof)).status, 400);
+assert.equal(
+  (
+    await captchaBrowser.auth("heybox/verify-code", {
+      challenge: captchaState.challenge,
+      code: "123456",
+    })
+  ).status,
+  200,
+);
+assert.equal((await captchaBrowser.rpc.dashboard()).account, "00001");
+await captchaBrowser.rpc.deleteAccount({ confirm: true });
+const verificationBrowser = new Browser();
+const verificationStart = await verificationBrowser.auth("heybox/send-code", {
+  phone: "13900000002",
+});
+const verificationState = (await verificationStart.json()) as { challenge: string };
+const verificationChallenge = await verificationBrowser.auth("heybox/verify-code", {
+  challenge: verificationState.challenge,
+  code: "123456",
+});
+assert.equal(((await verificationChallenge.json()) as { status: string }).status, "captcha");
+const verified = await verificationBrowser.auth("heybox/complete-captcha", {
+  ...proof,
+  challenge: verificationState.challenge,
+});
+assert.equal(verified.status, 200);
+assert.equal(((await verified.json()) as { status: string }).status, "authenticated");
+assert.equal((await verificationBrowser.rpc.dashboard()).account, "00002");
+await verificationBrowser.rpc.deleteAccount({ confirm: true });
 assert.equal(
   (
     await fetch(`${base}/api/auth/heybox/send-code`, {
@@ -116,6 +184,19 @@ const second = await b.rpc.dashboard();
 assert.notEqual(first.account, second.account);
 assert.equal(first.nickname, "测试盒友");
 assert.equal(first.avatar, null);
+const existingSessionChallenge = await b.auth("heybox/send-code", { phone: "13900000003" });
+const existingChallenge = (await existingSessionChallenge.json()) as { challenge: string };
+assert.equal(
+  (
+    await b.auth("heybox/complete-captcha", {
+      ...proof,
+      challenge: existingChallenge.challenge,
+      ticket: "invalid-proof",
+    })
+  ).status,
+  400,
+);
+assert.equal((await b.rpc.dashboard()).account, second.account);
 assert.ok(first.enabled && second.enabled);
 assert.ok(!JSON.stringify(first).includes("ciphertext"));
 assert.ok(!JSON.stringify(first).includes("pkey"));
