@@ -1,0 +1,11 @@
+{
+  "appVersion": "1.3.398",
+  "appBuild": "1142",
+  "shaderVersion": "14",
+  "files": {
+    "app-metadata.apk": "f9f67511d01d1d519e601bd21f0dc024026ba267bbb1162c06fab3a21ab60a11",
+    "libglesv3_1.so": "5ff6850b0b682418bf62be178acb481119be042a7297c1f3bdf47666dca86344",
+    "libnative-lib.so": "5d8699f237ab12582f3d9b22c23c3edb91f9f65bca3ac1211c36e25fdb069489",
+    "shader-code.bin": "05d39913b3cfe0345e6cb86d44ce21e1e67a325cf428b8f613d1774f9b2067ea"
+  }
+}

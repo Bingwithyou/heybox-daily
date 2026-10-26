@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare the version-matched native assets without committing or downloading them."""
+"""Extract the shared signing assets; no account or device data is needed."""
 import argparse
 import hashlib
 from pathlib import Path
-import shutil
 import zipfile
 
 parser = argparse.ArgumentParser(description='从 APP 安装包和配套 shader 文件准备签名资源')
@@ -19,13 +18,18 @@ expected = {
 try:
     with zipfile.ZipFile(args.apk) as apk:
         data = {name: apk.read('lib/arm64-v8a/' + name) for name in expected if name.endswith('.so')}
+        metadata = {name: apk.read(name) for name in ['AndroidManifest.xml', 'META-INF/MAXJIA.RSA']}
     data['shader-code.bin'] = Path(args.shader).read_bytes()
     for name, value in data.items():
         if hashlib.sha256(value).hexdigest() != expected[name]:
             raise ValueError('资源版本不匹配：' + name)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(args.apk, output / 'app-metadata.apk')
+    with zipfile.ZipFile(output / 'app-metadata.apk', 'w') as apk:
+        for name, value in metadata.items():
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            apk.writestr(entry, value)
     for name, value in data.items():
         (output / name).write_bytes(value)
 except (OSError, KeyError, ValueError, zipfile.BadZipFile) as error:

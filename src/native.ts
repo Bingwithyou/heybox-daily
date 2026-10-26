@@ -5,7 +5,7 @@ import { normalizePath } from './signature.js';
 import type { Config, NativeSignature } from './types.js';
 
 export function nativeSignature(endpoint: string, config: Config): NativeSignature {
-  const assets = path.resolve(process.env.HEYBOX_ASSETS || 'private/assets');
+  const assets = path.resolve(process.env.HEYBOX_ASSETS || 'third-party/heybox-assets');
   for (const file of ['app-metadata.apk', 'libnative-lib.so', 'libglesv3_1.so', 'shader-code.bin']) {
     if (!existsSync(path.join(assets, file))) throw new Error(`缺少签名资源：${file}`);
   }

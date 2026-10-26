@@ -19,3 +19,8 @@ jobs:
         run: docker run --rm --tmpfs /app/state heybox-daily-heybox help
       - name: Check login image entrypoint
         run: docker run --rm --tmpfs /app/state heybox-daily-login help
+      - name: Sign offline with bundled resources and no account
+        run: >-
+          docker run --rm --network none --read-only --tmpfs /tmp:exec,size=512m
+          --entrypoint node -v "$PWD/test:/app/test:ro"
+          heybox-daily-heybox --test test/native-smoke.js

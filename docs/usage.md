@@ -2,18 +2,10 @@
 
 ## 首次准备
 
-登录在服务器上完成，不需要 Android 手机、ADB 或手动复制 Cookie。第一次仍需准备签名资源：小黑盒 **1.3.398 / build 1142** 的 `base.apk` 和配套 **版本 14** 的 `shader-code.bin`，在有 Python 3 的电脑上执行：
+服务器只需安装 Docker 和 Docker Compose。签名资源已经随仓库提供，构建时会装入镜像，无需下载或准备 APK。登录在服务器上完成，不需要 Android 手机、ADB 或手动复制 Cookie。
 
 ```bash
-python3 scripts/prepare-assets.py --apk /path/to/base.apk --shader /path/to/shader-code.bin
-```
-
-脚本会提取原生库并检查资源是否匹配。`shader-code.bin` 不在 APK 中，来自小黑盒 `/account/getui/fix` 接口返回的 `code` 字段，需要 Base64 解码为二进制文件。当前脚本还没有自动获取这份文件的功能。
-
-将生成的 `private/assets` 复制到服务器的仓库目录，再登录：
-
-```bash
-mkdir -p state
+mkdir -p private state
 chmod 700 private
 docker compose build heybox login
 docker compose run --rm login
@@ -27,13 +19,10 @@ docker compose run --rm login
 
 ```text
 private/
-├── config.json
-└── assets/
-    ├── app-metadata.apk
-    ├── libnative-lib.so
-    ├── libglesv3_1.so
-    └── shader-code.bin
+└── config.json
 ```
+
+约 2 MB 的公共资源位于 `third-party/heybox-assets`，与账号配置分开。程序直接读取镜像内的资源，日常运行不会下载 APK。旧版本留下的 `private/assets` 不再是默认读取位置；升级不需要重新登录。
 
 检查和运行：
 
@@ -48,6 +37,21 @@ docker compose run --rm heybox run
 <summary>已有 Android 登录态的导入方式</summary>
 
 旧导入脚本继续可用：在连接了 Android 手机的电脑上安装 Python 3 和 `adb`，手机先登录小黑盒并允许 USB 调试，再运行 `python3 scripts/import-android.py`。连接多台设备时加 `--serial 设备序列号`，生成的 `private/config.json` 可复制到服务器使用。手动配置格式见 [config.example.json](../config.example.json)。
+
+</details>
+
+<details>
+<summary>维护或自行替换签名资源</summary>
+
+内置资源与 Android **1.3.398 / build 1142 / shader 14** 配套。`app-metadata.apk` 只保留 APK 的 `AndroidManifest.xml` 和公开签名证书 `META-INF/MAXJIA.RSA`；另外包含两份原生库和公共 shader。文件的 SHA-256 记录在同目录的 `manifest.json`。
+
+维护者可用 Python 3 重新提取已有的配套资源：
+
+```bash
+python3 scripts/prepare-assets.py --apk /path/to/base.apk --shader /path/to/shader-code.bin --output private/assets
+```
+
+shader 来自官方 `/account/getui/fix` 接口返回的 `code` 字段，经 Base64 解码得到；无需账号登录。脚本校验库和 shader 的哈希，只输出所需的元数据与签名文件。可用 `docker compose run --rm -e HEYBOX_ASSETS=/app/private/assets heybox check` 验证自备资源。更新内置版本时需同步版本配置、资源清单和验证记录，不能直接替换为任意最新版。
 
 </details>
 
@@ -93,4 +97,6 @@ pnpm check
 
 `pnpm build` 将 `src/*.ts` 编译到 `dist/`，Docker 镜像在构建时完成编译。运行容器不需要在服务器额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，使用 `node dist/cli.js login`，并通过 `CHROMIUM_PATH` 指定 Chromium 可执行文件。
 
-MIT License。依赖与协议参考见 [NOTICE.md](../NOTICE.md)。APP 资源不随仓库发布。
+CI 另在禁用网络、未挂载账号配置的容器中验证原生签名，确认镜像自带的资源完整可用。
+
+项目代码采用 MIT License。第三方资源、依赖与协议参考见 [NOTICE.md](../NOTICE.md)。

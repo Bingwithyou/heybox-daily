@@ -12,3 +12,7 @@ __pycache__/
 *.so
 *.bin
 *.tar.gz
+!third-party/heybox-assets/app-metadata.apk
+!third-party/heybox-assets/libnative-lib.so
+!third-party/heybox-assets/libglesv3_1.so
+!third-party/heybox-assets/shader-code.bin
