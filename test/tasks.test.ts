@@ -73,6 +73,14 @@ test('login/readback errors stop the job immediately', async () => {
   const client = mockClient({ tasks: async () => { throw new Error('登录过期'); }, signState: () => assert.fail() });
   await assert.rejects(runDaily(client, '12345', { log: quiet }), /登录过期/);
 });
+test('revoking a hosted job stops before the next external share action', async () => {
+  const events: ShareEvent[] = [];
+  const client = mockClient({ tasks: async () => result(['waiting', 'finish', 'finish']), signState: async () => state,
+    web: async () => ({ links: [{ link_id: 'article', h_src: 'source' }] }), report: async event => { events.push(event); } });
+  await assert.rejects(runDaily(client, '12345', { now, log: quiet, sleep: async () => {},
+    checkpoint: async () => { if (events.length) throw new Error('revoked'); } }), /revoked/);
+  assert.deepEqual(events.map(event => event.path), ['/share/behavior/show']);
+});
 test('post selection includes the feed pull parameters required by the API', async () => {
   const candidate = await selectShare(mockClient({ web: async (endpoint, query) => {
     assert.equal(endpoint, '/bbs/app/feeds');

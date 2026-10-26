@@ -1,8 +1,14 @@
 **
 !package.json
 !pnpm-lock.yaml
+!pnpm-workspace.yaml
 !tsconfig.json
 !src/**
+!apps/web/package.json
+!apps/runner/package.json
+!apps/runner/src/**
+!packages/contracts/package.json
+!packages/contracts/src/**
 !signer/pom.xml
 !signer/src/**
 !third-party/**

@@ -64,11 +64,14 @@ export async function inspect(client: Pick<TaskClient, 'tasks' | 'signState'>, a
   return { ...current, signed: signedToday(sign, now()) };
 }
 
-interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void }
-export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log }: RunOptions = {}) {
+interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot) => void }
+export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {} }: RunOptions = {}) {
+  await checkpoint();
   const before = await inspect(client, account, now);
+  onSnapshot(before);
   let current: TaskSnapshot = before;
   if (!before.signed) {
+    await checkpoint();
     await client.sign();
     let verified = false;
     for (const delay of delays) {
@@ -78,13 +81,16 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     if (!verified) throw new Error('签到未确认到账，任务已停止');
     log('签到完成');
     current = snapshot(await client.tasks(), account);
+    onSnapshot(current);
   } else log('今天已签到');
 
   for (const id of shareIds) {
+    await checkpoint();
     if (current.tasks.find(task => task.id === id)!.state === 'finish') { log(`${names[id]}已完成，跳过`); continue; }
     const addition = await selectShare(client, id);
     const sessionId = randomUUID();
     for (const action of ['show', 'tap', 'success'] as const) {
+      await checkpoint();
       await client.report(shareEvent(action, addition, sessionId, Math.floor(now() / 1000)), sessionId);
       if (action === 'tap') await sleep(2000);
     }
@@ -92,6 +98,7 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     for (const delay of delays) {
       await sleep(delay);
       current = snapshot(await client.tasks(), account);
+      onSnapshot(current);
       if (current.tasks.find(task => task.id === id)!.state === 'finish') { settled = true; break; }
     }
     if (!settled) throw new Error(`${names[id]}上报后未结算，请稍后重新检查`);

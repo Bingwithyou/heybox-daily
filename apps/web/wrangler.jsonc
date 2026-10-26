@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "heybox-daily",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "heybox-daily",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": { "SITE_URL": "http://localhost:3000", "RUNNER_URL": "http://127.0.0.1:8788" },
+}

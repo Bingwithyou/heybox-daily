@@ -13,7 +13,16 @@ jobs:
       - run: npm install --global pnpm@12.15.0
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm test
+      - run: pnpm --filter @heybox/runner typecheck
+      - run: pnpm --filter @heybox/runner test
+      - run: pnpm --filter @heybox/web test
+      - run: pnpm --filter @heybox/web build
+      - run: pnpm --filter @heybox/web typecheck
+      - run: pnpm --filter @heybox/web lint
+      - run: pnpm --filter @heybox/web format:check
+      - run: pnpm --filter @heybox/web test:integration
       - run: docker compose build heybox login
+      - run: docker build --target runner -t heybox-daily-runner:ci .
       - name: Check image entrypoint without account credentials
         run: docker run --rm --tmpfs /app/state heybox-daily-heybox help
       - name: Check login image entrypoint
@@ -23,3 +32,8 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:exec,size=512m
           --entrypoint node -v "$PWD/test:/app/test:ro"
           heybox-daily-heybox --test test/native-smoke.ts
+      - name: Check runner process, encryption and login boundaries offline
+        run: >-
+          docker run --rm --network none --read-only --tmpfs /tmp:exec,size=512m
+          --entrypoint node -v "$PWD/apps/runner/test:/app/apps/runner/test:ro"
+          heybox-daily-runner:ci --test apps/runner/test/*.test.ts

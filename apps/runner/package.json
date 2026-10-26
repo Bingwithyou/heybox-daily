@@ -1,0 +1,5 @@
+{
+  "name": "@heybox/runner", "private": true, "type": "module",
+  "scripts": { "start": "node src/main.ts", "typecheck": "tsc --noEmit", "test": "node --test test/*.test.ts" },
+  "dependencies": { "@heybox/contracts": "workspace:*", "heybox-daily": "workspace:*", "zod": "4.6.7" }
+}

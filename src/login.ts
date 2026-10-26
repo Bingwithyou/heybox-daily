@@ -21,13 +21,15 @@ interface LoginResult {
   pkey?: string;
 }
 type LoginClient = Pick<HeyboxClient, 'native' | 'tasks' | 'signState'>;
-interface LoginOptions {
-  ask(question: string): Promise<string>;
-  log?(message: string): void;
-  file?: string;
+export interface LoginDependencies {
   getDeviceToken?: () => Promise<string>;
   clientFactory?: (config: Config) => LoginClient;
   preflight?: (config: Config) => void;
+}
+interface LoginOptions extends LoginDependencies {
+  ask(question: string): Promise<string>;
+  log?(message: string): void;
+  file?: string;
 }
 
 export function normalizePhone(value: string) {
@@ -49,20 +51,42 @@ export function createLoginConfig(token: string): Config {
   };
 }
 
-export async function runSmsLogin(options: LoginOptions) {
-  const log = options.log || console.log;
-  const clientFactory = options.clientFactory || (config => new HeyboxClient(config));
+export async function prepareLogin(options: LoginDependencies = {}) {
   const config = createLoginConfig('');
   (options.preflight || (value => nativeSignature('/account/get_login_code/', value)))(config);
-  log('正在获取设备令牌…');
   const token = await (options.getDeviceToken || getDeviceToken)();
   if (!/^B[A-Za-z0-9+/=_-]{88}$/.test(token)) throw new Error('官网返回的设备令牌格式异常');
   config.session.x_xhh_tokenid = token;
-  const client = clientFactory(config);
+  return config;
+}
+
+export async function sendLoginCode(config: Config, phone: string, options: LoginDependencies = {}) {
+  const client = (options.clientFactory || (value => new HeyboxClient(value)))(config);
+  await client.native('/account/get_login_code/', {}, new URLSearchParams({ phone_num: encryptPhone(normalizePhone(phone)) }));
+}
+
+export async function verifyLoginCode(config: Config, phone: string, code: string, options: LoginDependencies = {}) {
+  if (!/^\d{4,8}$/.test(code)) throw new Error('验证码应为 4 至 8 位数字');
+  const factory = options.clientFactory || (value => new HeyboxClient(value));
+  const result = await factory(config).native<LoginResult>('/account/login_code/', { code, is_new_device: '1' },
+    new URLSearchParams({ phone_num: encryptPhone(normalizePhone(phone)) }));
+  const account = String(result?.profile?.heybox_id ?? '');
+  if (!/^\d+$/.test(account) || account !== String(result?.account_detail?.userid) || !result?.pkey) {
+    throw new Error('登录响应中的账号或凭据无效，原配置已保留');
+  }
+  const authenticated = validateConfig({ ...config, session: { ...config.session, heybox_id: account, pkey: result.pkey } });
+  await inspect(factory(authenticated), account);
+  return authenticated;
+}
+
+export async function runSmsLogin(options: LoginOptions) {
+  const log = options.log || console.log;
+  log('正在获取设备令牌…');
+  const config = await prepareLogin(options);
   const phone = normalizePhone(await options.ask('手机号（默认 +86）：'));
-  await client.native('/account/get_login_code/', {}, new URLSearchParams({ phone_num: encryptPhone(phone) }));
+  await sendLoginCode(config, phone, options);
   log(`验证码已发送至尾号 ${phone.slice(-4)}`);
-  let result: LoginResult | undefined;
+  let authenticated: Config | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = (await options.ask('验证码（回车取消）：')).trim();
     if (!code) throw new Error('已取消登录，原配置已保留');
@@ -72,21 +96,14 @@ export async function runSmsLogin(options: LoginOptions) {
       continue;
     }
     try {
-      result = await client.native<LoginResult>('/account/login_code/', { code, is_new_device: '1' },
-        new URLSearchParams({ phone_num: encryptPhone(phone) }));
+      authenticated = await verifyLoginCode(config, phone, code, options);
       break;
     } catch (error) {
       if (!(error instanceof HeyboxApiError) || !error.retryCode || attempt === 2) throw error;
       log(`${error.message}；请核对验证码后重输，或直接回车取消`);
     }
   }
-  const account = String(result?.profile?.heybox_id ?? '');
-  if (!/^\d+$/.test(account) || account !== String(result?.account_detail?.userid) || !result?.pkey) {
-    throw new Error('登录响应中的账号或凭据无效，原配置已保留');
-  }
-  const authenticated = validateConfig({ ...config, session: { ...config.session, heybox_id: account, pkey: result.pkey } });
-  log('正在验证登录状态…');
-  await inspect(clientFactory(authenticated), account);
+  if (!authenticated) throw new Error('登录未完成，原配置已保留');
   saveConfig(authenticated, options.file);
   log('登录成功，账号配置已保存');
 }

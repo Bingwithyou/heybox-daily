@@ -8,6 +8,10 @@ signer/target/
 .DS_Store
 __pycache__/
 .env
+.dev.vars
+.wrangler/
+.tanstack/
+.output/
 *.apk
 *.so
 *.bin
