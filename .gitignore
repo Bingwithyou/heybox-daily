@@ -1,0 +1,13 @@
+private/
+.research/
+state/
+node_modules/
+signer/target/
+*.log
+.DS_Store
+__pycache__/
+.env
+*.apk
+*.so
+*.bin
+*.tar.gz

@@ -1,0 +1,9 @@
+**
+!package.json
+!package-lock.json
+!src/**
+!signer/pom.xml
+!signer/src/**
+!third-party/**
+!LICENSE
+!NOTICE.md

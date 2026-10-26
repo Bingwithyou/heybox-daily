@@ -1,0 +1,18 @@
+services:
+  heybox:
+    build: .
+    init: true
+    restart: "no"
+    read_only: true
+    volumes:
+      - ./private:/app/private:ro
+      - ./state:/app/state
+    tmpfs:
+      - /tmp:exec,size=512m
+    mem_limit: 768m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: Asia/Shanghai
