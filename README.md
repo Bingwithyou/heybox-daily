@@ -1,5 +1,5 @@
 <h1 align="center">Heybox Daily</h1>
-<p align="center">跑在自己服务器上的小黑盒签到脚本。</p>
+<p align="center">开箱即用的小黑盒每日签到和每日任务脚本</p>
 <p align="center">
   <a href="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml"><img src="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
@@ -9,10 +9,6 @@
   <a href="docs/usage.md">使用说明</a> ·
   <a href="https://github.com/Cansiny0320/heybox-daily/issues">问题反馈</a>
 </p>
-
-每天签到，完成分享帖子、游戏和游戏评价三项任务。已经做过的会跳过，跑完会再检查结果。
-
-用 Docker 运行，输入手机号和短信验证码登录。需要的资源已经带好了，不用自己找 APK 或抓 Cookie，也不用一直连着手机。
 
 ## 快速开始
 
@@ -40,7 +36,7 @@ docker compose run --rm heybox check
 docker compose run --rm heybox run
 ```
 
-程序跑完就退出。想每天自动运行，需要在服务器上加一个 cron 任务，配置方法和更新步骤见 [使用说明](docs/usage.md)。
+想每天自动运行，需要在服务器上加一个 cron 任务，配置方法和更新步骤见 [使用说明](docs/usage.md)。
 
 ## 几点说明
 
