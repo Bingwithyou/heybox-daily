@@ -28,6 +28,11 @@ export const verifySchema = z.object({ challenge: idSchema, code: codeSchema, bi
 export const finishSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema, result: outcomeSchema });
 export const heartbeatSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema });
 export const beginResultSchema = z.object({ challenge: idSchema, expiresAt: z.number(), retryAfter: z.number() });
+export const loginFailureSchema = z.object({ code: z.literal('captcha_required') });
+export class LoginFailure extends Error {
+  readonly code = 'captcha_required' as const;
+  constructor() { super('小黑盒要求完成人机验证，当前登录未完成'); }
+}
 
 export function beijingDate(now = Date.now()) { return new Date(now + 8 * 3600_000).toISOString().slice(0, 10); }
 export function nextRunAt(now = Date.now()) {

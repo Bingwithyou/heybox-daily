@@ -187,3 +187,14 @@ test('invalid config is rejected before touching the target file', () => {
     assert.equal(readFileSync(f.file, 'utf8'), 'existing configuration');
   } finally { f.cleanup(); }
 });
+
+test('a required human challenge is distinguished from a rejected SMS code without exposing raw details', async () => {
+  const error = new HeyboxApiError('/account/get_login_code/', 'show_captcha', '请先验证 private-fixture-13800138000');
+  assert.equal(error.captchaRequired, true);
+  assert.equal(error.retryCode, false);
+  assert.match(error.message, /人机验证/);
+  assert.ok(!error.message.includes('private-fixture'));
+  const ordinary = new HeyboxApiError('/account/login_code/', 'failed', '验证码错误');
+  assert.equal(ordinary.captchaRequired, false);
+  assert.equal(ordinary.retryCode, true);
+});

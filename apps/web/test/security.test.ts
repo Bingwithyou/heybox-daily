@@ -74,3 +74,27 @@ test("body limits apply to actual bytes even when Content-Length is absent", asy
     /请求过大/,
   );
 });
+
+test("runner human-challenge errors keep their safe code instead of becoming a gateway failure", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () =>
+    Response.json({ code: "captcha_required", error: "private-provider-details" }, { status: 400 });
+  try {
+    await assert.rejects(
+      runnerRequest(
+        { RUNNER_URL: "https://runner.invalid", RUNNER_SERVICE_TOKEN: "test" } as Env,
+        "/login/begin",
+        {},
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal((error as Error & { code: string }).code, "captcha_required");
+        assert.match(error.message, /人机验证/);
+        assert.ok(!error.message.includes("private-provider-details"));
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
+});

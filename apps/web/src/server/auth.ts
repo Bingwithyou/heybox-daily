@@ -10,6 +10,7 @@ import {
   idSchema,
   beginResultSchema,
   credentialSchema,
+  LoginFailure,
 } from "@heybox/contracts";
 import * as schema from "./schema.ts";
 import { Store } from "./store.ts";
@@ -46,7 +47,9 @@ export function createAuth(env: Env) {
             data = beginResultSchema.parse(
               await runnerRequest(env, "/login/begin", { phone: ctx.body.phone, binding }),
             );
-          } catch {
+          } catch (error) {
+            if (error instanceof LoginFailure)
+              throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
             console.warn("登录执行端暂时不可用");
             throw new APIError("BAD_GATEWAY", { message: "小黑盒暂时无法发送验证码，请稍后重试" });
           }
@@ -77,7 +80,9 @@ export function createAuth(env: Env) {
             credential = credentialSchema.parse(
               await runnerRequest(env, "/login/verify", { ...ctx.body, binding }),
             );
-          } catch {
+          } catch (error) {
+            if (error instanceof LoginFailure)
+              throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
             throw new APIError("BAD_REQUEST", {
               message: "验证码错误、已过期或小黑盒暂时不可用，请稍后重试",
             });

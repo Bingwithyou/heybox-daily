@@ -50,6 +50,12 @@ const a = new Browser();
 const b = new Browser();
 const guest = new Browser();
 await assert.rejects(guest.rpc.dashboard(), /请先登录/);
+const humanChallenge = await guest.auth("heybox/send-code", { phone: "13900000000" });
+assert.equal(humanChallenge.status, 400);
+const challengeError = (await humanChallenge.json()) as { code: string; message: string };
+assert.equal(challengeError.code, "captcha_required");
+assert.match(challengeError.message, /人机验证/);
+assert.equal(guest.cookies.size, 0);
 assert.equal(
   (
     await fetch(`${base}/api/auth/heybox/send-code`, {

@@ -1,5 +1,5 @@
 import { prepareLogin, sendLoginCode, verifyLoginCode } from 'heybox-daily/login';
-import { HeyboxClient } from 'heybox-daily/client';
+import { HeyboxApiError, HeyboxClient } from 'heybox-daily/client';
 import { inspect, runDaily } from 'heybox-daily/tasks';
 import type { Config, Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
 import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot } from '@heybox/contracts';
@@ -7,6 +7,7 @@ import { decryptCredential } from './crypto.ts';
 import { fileURLToPath } from 'node:url';
 
 export function failureCategory(error: unknown) {
+  if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';
   const text = error instanceof Error ? error.message : '';
   if (/原生签名|签名资源/.test(text)) return 'native_signer';
   if (/设备令牌|官网/.test(text)) return 'device_token';
@@ -63,6 +64,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().then(value => process.stdout.write(JSON.stringify({ ok: true, value })), error => {
     const message = error instanceof Error ? error.message : '';
     const safe = /验证码.*(?:不正确|错误|过期)|频繁/.test(message) ? '验证码错误、过期或请求过于频繁，请核对后重试' : '小黑盒暂时无法完成登录，请稍后重试';
-    process.stdout.write(JSON.stringify({ ok: false, error: safe, category: failureCategory(error) }));
+    const category = failureCategory(error);
+    process.stdout.write(JSON.stringify({ ok: false, error: safe, category,
+      code: category === 'captcha_required' ? category : undefined }));
   });
 }

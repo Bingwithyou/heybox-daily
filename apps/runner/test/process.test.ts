@@ -4,8 +4,10 @@ import { runChild } from '../src/process.ts';
 import { createRunnerServer } from '../src/server.ts';
 import { ChallengeStore } from '../src/challenges.ts';
 import { failureCategory } from '../src/worker.ts';
+import { HeyboxApiError } from 'heybox-daily/client';
 
 test('failure diagnostics identify the stage without exposing exception text or credentials', () => {
+  assert.equal(failureCategory(new HeyboxApiError('/account/get_login_code/', 'show_captcha', 'private-fixture')), 'captcha_required');
   assert.equal(failureCategory(new Error('未能从官网获取设备令牌')), 'device_token');
   assert.equal(failureCategory(new Error('请求过于频繁，请稍后再试')), 'upstream_rate_limit');
   assert.equal(failureCategory(new Error('HTTP 403：/account/get_login_code/')), 'upstream_http');

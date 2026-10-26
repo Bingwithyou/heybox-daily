@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { beginSchema, verifySchema } from '@heybox/contracts';
+import { beginSchema, verifySchema, LoginFailure } from '@heybox/contracts';
 import { ChallengeStore } from './challenges.ts';
 import { encryptCredential } from './crypto.ts';
 
@@ -28,6 +28,10 @@ export function createRunnerServer(store: ChallengeStore, token: string, key: st
         response.end(JSON.stringify(encryptCredential(config, key)));
       } else response.writeHead(404).end('{}');
     } catch (error) {
+      if (error instanceof LoginFailure) {
+        response.writeHead(400).end(JSON.stringify({ code: error.code, error: error.message }));
+        return;
+      }
       const message = error instanceof Error ? error.message : '';
       const safe = /挑战|处理中|繁忙/.test(message) ? message : '验证码错误、已过期或小黑盒暂时不可用，请稍后重试';
       response.writeHead(400).end(JSON.stringify({ error: safe }));

@@ -9,13 +9,16 @@ interface ApiResponse<T> { status?: string; msg?: string; result: T }
 
 export class HeyboxApiError extends Error {
   readonly retryCode: boolean;
+  readonly captchaRequired: boolean;
   constructor(endpoint: string, status: string | undefined, detail = '') {
     const expired = /验证码.*(?:过期|失效)/.test(detail);
     const limited = /频繁|次数.*限制/.test(detail);
     const wrongCode = /验证码.*(?:错误|不正确)/.test(detail);
     const safeStatus = /^[a-z_]{1,32}$/.test(status ?? '') ? status : 'unknown';
-    const reason = expired ? '验证码已过期，请重新登录获取新的验证码' : limited ? '请求过于频繁，请稍后再试' : wrongCode ? '验证码不正确，请重新输入' : `接口未成功：${endpoint}（${safeStatus}）`;
+    const captchaRequired = status === 'show_captcha';
+    const reason = captchaRequired ? '小黑盒要求完成人机验证后才能继续登录' : expired ? '验证码已过期，请重新登录获取新的验证码' : limited ? '请求过于频繁，请稍后再试' : wrongCode ? '验证码不正确，请重新输入' : `接口未成功：${endpoint}（${safeStatus}）`;
     super(reason);
+    this.captchaRequired = captchaRequired;
     this.retryCode = endpoint === '/account/login_code/' && status === 'failed' && !expired && !limited;
   }
 }
