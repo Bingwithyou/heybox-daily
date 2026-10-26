@@ -30,7 +30,7 @@ async function loadCaptcha() {
   if (!loading) {
     loading = new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = "https://turing.captcha.qcloud.com/TCaptcha.js";
+      script.src = "https://turing.captcha.qcloud.com/TJCaptcha.js";
       script.async = true;
       const fail = () => {
         clearTimeout(timer);
