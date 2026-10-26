@@ -2,7 +2,7 @@
 
 ## 首次准备
 
-服务器只需安装 Docker 和 Docker Compose。签名资源已经随仓库提供，构建时会装入镜像，无需下载或准备 APK。登录在服务器上完成，不需要 Android 手机、ADB 或手动复制 Cookie。
+服务器只需安装 Docker 和 Docker Compose。APP 签名使用纯 TypeScript，在本地计算，无需 Java、Android 原生库或 APK。登录在服务器上完成，不需要 Android 手机、ADB 或手动复制 Cookie。
 
 ```bash
 mkdir -p private state
@@ -11,7 +11,7 @@ docker compose build heybox login
 docker compose run --rm login
 ```
 
-按提示输入手机号和验证码，国内手机号默认使用 `+86`，其他号码需包含国家或地区区号。程序会在临时 Chromium 中通过官网获取设备令牌，短信登录后验证原生签到和任务接口，成功后生成 `private/config.json`。浏览器随后退出，日常任务镜像不包含浏览器。
+按提示输入手机号和验证码，国内手机号默认使用 `+86`，其他号码需包含国家或地区区号。程序会在临时 Chromium 中通过官网获取设备令牌，短信登录后读取任务接口核验账号，成功后生成 `private/config.json`。浏览器随后退出，日常任务镜像不包含浏览器。
 
 验证码输错后可以在同一会话内重输，最多提交三次，直接回车可取消。程序不会自动重发短信。登录失败时原配置会保留；验证码过期、发送频率限制等情况会直接停止。
 
@@ -22,7 +22,7 @@ private/
 └── config.json
 ```
 
-约 2 MB 的公共资源位于 `third-party/heybox-assets`，与账号配置分开。程序直接读取镜像内的资源，日常运行不会下载 APK。旧版本留下的 `private/assets` 不再是默认读取位置；升级不需要重新登录。
+运行镜像不包含 Android 资源。仓库中的 `third-party/heybox-assets` 和 Java 辅助程序仅保留作协议研究与对照参考；现有 `private/config.json` 继续兼容，升级不需要重新登录。
 
 检查和运行：
 
@@ -41,7 +41,7 @@ docker compose run --rm heybox run
 </details>
 
 <details>
-<summary>维护或自行替换签名资源</summary>
+<summary>维护签名版本与原生参考资源</summary>
 
 内置资源与 Android **1.3.398 / build 1142 / shader 14** 配套。`app-metadata.apk` 只保留 APK 的 `AndroidManifest.xml` 和公开签名证书 `META-INF/MAXJIA.RSA`；另外包含两份原生库和公共 shader。文件的 SHA-256 记录在同目录的 `manifest.json`。
 
@@ -51,7 +51,7 @@ docker compose run --rm heybox run
 python3 scripts/prepare-assets.py --apk /path/to/base.apk --shader /path/to/shader-code.bin --output private/assets
 ```
 
-shader 来自官方 `/account/getui/fix` 接口返回的 `code` 字段，经 Base64 解码得到；无需账号登录。脚本校验库和 shader 的哈希，只输出所需的元数据与签名文件。可用 `docker compose run --rm -e HEYBOX_ASSETS=/app/private/assets heybox check` 验证自备资源。更新内置版本时需同步版本配置、资源清单和验证记录，不能直接替换为任意最新版。
+shader 来自官方 `/account/getui/fix` 接口返回的 `code` 字段，经 Base64 解码得到；无需账号登录。脚本校验库和 shader 的哈希，只输出所需的元数据与签名文件。这些资源不会被当前运行程序读取，`HEYBOX_ASSETS` 不再参与签名。更新版本时需重新恢复算法、核对原生测试向量，并验证真实登录和签到；不能只修改版本号或替换资源文件。
 
 </details>
 
@@ -79,7 +79,7 @@ docker compose run --rm heybox check
 
 ## 开发
 
-业务代码使用 TypeScript 和 Node.js 24，通过 pnpm 管理依赖、编译和测试。原生签名使用 Java 17、Maven 和 Unidbg，登录使用 Playwright Core 和 Chromium。首次使用时安装项目固定的 pnpm 版本：
+业务代码使用 TypeScript 和 Node.js 24，通过 pnpm 管理依赖、编译和测试。APP 和 Web 签名均由 TypeScript 计算，登录使用 Playwright Core 和 Chromium。首次使用时安装项目固定的 pnpm 版本：
 
 ```bash
 npm install --global pnpm@12.15.0
@@ -91,7 +91,6 @@ npm install --global pnpm@12.15.0
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm typecheck
 pnpm test
-mvn -f signer/pom.xml package dependency:copy-dependencies -DincludeScope=runtime
 pnpm check
 ```
 
@@ -99,6 +98,6 @@ pnpm check
 
 Docker 镜像在构建时完成编译，服务器不需要额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，使用 `node dist/cli.js login`，并通过 `CHROMIUM_PATH` 指定 Chromium 可执行文件。
 
-CI 另在禁用网络、未挂载账号配置的容器中验证原生签名，确认镜像自带的资源完整可用。
+CI 使用固定版本的 24 组原生测试向量验证 TypeScript 签名，并在禁用网络、未挂载账号配置的容器中确认签名不依赖 Java 或 Android 资源。
 
 项目代码采用 MIT License。第三方资源、依赖与协议参考见 [NOTICE.md](../NOTICE.md)。

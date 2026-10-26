@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { nativeSignature } from '../dist/native.js';
 
 // Run separately inside the built image with --network none and no private volume.
-test('the image signs offline with bundled assets and no account configuration', () => {
+test('the image signs offline without Java, Android assets or account configuration', () => {
+  assert.equal(existsSync('/usr/bin/java'), false);
+  assert.equal(existsSync('/app/signer'), false);
+  assert.equal(existsSync('/app/third-party/heybox-assets'), false);
   const signature = nativeSignature('/account/get_login_code/', {
     session: { heybox_id: '-1', pkey: '', device_id: 'offline-smoke-test', x_xhh_tokenid: '' },
     device: { model: 'PKJ110', osVersion: '17' },

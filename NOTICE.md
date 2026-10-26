@@ -9,4 +9,6 @@
 
 `third-party/heybox-assets/` 保存从小黑盒 Android 1.3.398 / build 1142 提取的两份原生库、仅包含清单和公开签名证书的精简包，以及官方 `/account/getui/fix` 接口提供的 shader 14。版本和 SHA-256 见该目录的 `manifest.json`。这些文件供所有账号共用，不含登录凭据、设备标识或用户数据，也不包含完整 APK。
 
+`src/native-algorithm.ts` 根据上述固定版本的原生实现恢复 APP 签名，使用 `test/fixtures/native-v14.json` 中的离线原生结果验证。原生资源和 `signer/` 仅保留作研究参考，不装入运行镜像，也不参与日常签名；新的 APP 或 shader 版本需要重新验证。
+
 上述 APP 资源的权利属于其原权利人，不属于本项目的 MIT 授权范围。

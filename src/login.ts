@@ -61,8 +61,7 @@ export function createLoginConfig(token: string): Config {
 
 export async function prepareLogin(options: LoginDependencies = {}) {
   const config = createLoginConfig('');
-  // Sending the code signs locally before making its HTTP request. Do not start
-  // another native process here just to repeat that same check.
+  // Sending the code signs locally before making its HTTP request.
   options.preflight?.(config);
   const token = await (options.getDeviceToken || getDeviceToken)();
   if (!/^B[A-Za-z0-9+/=_-]{88}$/.test(token)) throw new Error('官网返回的设备令牌格式异常');

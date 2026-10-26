@@ -9,8 +9,6 @@
 !apps/runner/src/**
 !packages/contracts/package.json
 !packages/contracts/src/**
-!signer/pom.xml
-!signer/src/**
-!third-party/**
+!third-party/*-LICENSE
 !LICENSE
 !NOTICE.md

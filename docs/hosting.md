@@ -95,7 +95,7 @@ cp apps/runner/.env.example private/runner.env
 docker compose -p heybox-hosted -f compose.hosted.yaml --profile tunnel up -d --build
 ```
 
-runner 只监听主机回环地址；cloudflared 不开放额外入站端口。登录操作合计最多两个并发，日常任务逐个执行，Java 和 Chromium 子进程有硬超时。
+runner 只监听主机回环地址；cloudflared 不开放额外入站端口。登录操作合计最多两个并发，日常任务逐个执行，登录和任务子进程有硬超时。APP 签名由 TypeScript 在进程内计算，不启动 Java 或 Android 模拟环境；Chromium 仅用于获取登录设备令牌。
 
 ### 3. 发布网站
 
