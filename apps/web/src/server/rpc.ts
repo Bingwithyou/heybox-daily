@@ -3,6 +3,7 @@ import { z } from "zod";
 import { createAuth } from "./auth.ts";
 import { Store } from "./store.ts";
 import type { Env } from "./env.ts";
+import { notifyRunner } from "./notify.ts";
 
 const authenticated = os
   .$context<{ env: Env; request: Request }>()
@@ -23,12 +24,14 @@ export const router = {
     .input(z.object({ enabled: z.boolean() }))
     .handler(async ({ context, input }) => {
       await context.store.setEnabled(context.userId, input.enabled);
+      if (input.enabled) await notifyRunner(context.env);
       return { ok: true };
     }),
   retry: authenticated.handler(async ({ context }) => {
     if (!(await context.store.quota(`retry:${context.userId}`, 3, 3600_000)))
       throw new ORPCError("TOO_MANY_REQUESTS", { message: "补跑次数过多，请稍后重试" });
     await context.store.enqueue(context.userId, true);
+    await notifyRunner(context.env);
     return { ok: true };
   }),
   deleteAccount: authenticated

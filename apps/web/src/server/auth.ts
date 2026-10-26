@@ -17,6 +17,7 @@ import * as schema from "./schema.ts";
 import { Store } from "./store.ts";
 import type { Env } from "./env.ts";
 import { privateKey, runnerRequest } from "./security.ts";
+import { notifyRunner } from "./notify.ts";
 
 export function createAuth(env: Env) {
   const store = new Store(env.DB);
@@ -46,6 +47,7 @@ export function createAuth(env: Env) {
       path: "/",
       maxAge: 0,
     });
+    await notifyRunner(env);
     return ctx.json({
       status: "authenticated",
       account: result.credential.account,

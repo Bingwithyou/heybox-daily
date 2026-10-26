@@ -32,7 +32,12 @@ export async function api(request: Request, env: Env): Promise<Response | null> 
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const store = new Store(env.DB);
     try {
-      if (path === "/internal/claim") return Response.json(await store.claim());
+      if (path === "/internal/claim") {
+        const job = await store.claim();
+        return Response.json(job, {
+          headers: job ? {} : { "retry-after": String(store.retryAfter) },
+        });
+      }
       const raw = await request.text();
       if (raw.length > 16_384) return new Response(null, { status: 413 });
       const body = JSON.parse(raw) as unknown;

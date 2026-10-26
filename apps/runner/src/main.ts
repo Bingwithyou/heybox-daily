@@ -1,8 +1,8 @@
-import { setTimeout } from 'node:timers/promises';
-import { jobSchema, outcomeSchema, type Outcome } from '@heybox/contracts';
+import type { Outcome } from '@heybox/contracts';
 import { ChallengeStore, type LoginStep } from './challenges.ts';
 import { createRunnerServer } from './server.ts';
 import { runChild } from './process.ts';
+import { TaskQueue } from './queue.ts';
 
 const token = process.env.RUNNER_SERVICE_TOKEN || '';
 const key = process.env.CREDENTIAL_KEY || '';
@@ -12,28 +12,14 @@ if (!website.startsWith('https://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/
 const store = new ChallengeStore({ begin: phone => runChild<LoginStep>({ action: 'begin', phone }, 120_000),
   send: (config, phone, proof) => runChild<LoginStep>({ action: 'send', config, phone, proof }, 120_000),
   verify: (config, phone, code, proof) => runChild<LoginStep>({ action: 'verify', config, phone, code, proof }, 120_000) });
-const server = createRunnerServer(store, token, key);
+const queue = new TaskQueue({ request,
+  execute: job => runChild<Outcome>({ action: 'daily', job }, 240_000),
+  warn: () => console.error('任务服务暂时不可用，稍后重试') });
+const server = createRunnerServer(store, token, key, () => queue.wake());
 server.listen(Number(process.env.PORT || 8788), process.env.HOST || '127.0.0.1', () => console.log('Heybox runner ready'));
-let stopping = false;
-for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { stopping = true; server.close(); });
+for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { queue.stop(); server.close(); });
 async function request(path: string, body: unknown) {
   return fetch(`${website}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body), signal: AbortSignal.timeout(15_000), redirect: 'error' });
 }
-while (!stopping) {
-  try {
-    const response = await request('/internal/claim', {});
-    if (!response.ok) throw new Error('claim unavailable');
-    const payload = await response.json();
-    if (!payload) { await setTimeout(10_000); continue; }
-    const job = jobSchema.parse(payload);
-    let result: Outcome;
-    try { result = outcomeSchema.parse(await runChild<Outcome>({ action: 'daily', job }, 240_000)); }
-    catch { result = { status: 'failed', reason: 'timeout' }; }
-    const finish = { id: job.id, lease: job.lease, version: job.credential.version, result };
-    for (let retry = 0; retry < 3; retry++) {
-      try { const done = await request('/internal/finish', finish); if (done.ok || done.status === 409) break; } catch { /* retry result delivery only */ }
-      await setTimeout(2000 * (retry + 1));
-    }
-  } catch { console.error('任务服务暂时不可用，稍后重试'); await setTimeout(15_000); }
-}
+await queue.run();

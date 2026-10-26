@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import assert from "node:assert/strict";
 import { createMockRunner } from "./mock-runner.ts";
 
 const web = fileURLToPath(new URL("../", import.meta.url));
@@ -12,7 +13,10 @@ const wrangler = path.join(web, "node_modules/wrangler/bin/wrangler.js");
 const directory = await mkdtemp(path.join(tmpdir(), "heybox-integration-"));
 const token = randomBytes(32).toString("hex");
 const key = randomBytes(32).toString("base64");
-const runner = createMockRunner(token, key);
+let notifications = 0;
+const runner = createMockRunner(token, key, () => {
+  notifications++;
+});
 await new Promise<void>((resolve) => runner.listen(0, "127.0.0.1", resolve));
 const runnerAddress = runner.address();
 if (!runnerAddress || typeof runnerAddress === "string") throw new Error("Runner port unavailable");
@@ -100,6 +104,14 @@ try {
     CREDENTIAL_KEY: key,
   }).done;
   console.log(result.trim());
+  assert.equal(
+    notifications,
+    6,
+    "successful logins, resume and retry must reach the authenticated runner wakeup endpoint",
+  );
+  console.log(
+    "PASS: login, resume and retry notifications reach the runner; pause does not wake it",
+  );
 } finally {
   worker?.child.kill("SIGTERM");
   await new Promise<void>((resolve) => runner.close(() => resolve()));

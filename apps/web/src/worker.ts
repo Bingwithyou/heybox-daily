@@ -1,7 +1,7 @@
 import start from "@tanstack/react-start/server-entry";
 import type { Env } from "./server/env.ts";
 import { api } from "./server/api.ts";
-import { Store } from "./server/store.ts";
+import { runScheduled } from "./server/schedule.ts";
 
 export default {
   async fetch(request: Request, env: Env) {
@@ -21,7 +21,7 @@ export default {
     result.headers.set("server-timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
     return result;
   },
-  async scheduled(_event: ScheduledController, env: Env, context: ExecutionContext) {
-    context.waitUntil(new Store(env.DB).schedule());
+  async scheduled(event: ScheduledController, env: Env, context: ExecutionContext) {
+    context.waitUntil(runScheduled(env, event.scheduledTime));
   },
 };

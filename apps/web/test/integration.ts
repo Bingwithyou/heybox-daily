@@ -236,10 +236,17 @@ for (let count = 0; count < 10 && accounts.size; count++) {
   accounts.delete(job.credential.account);
 }
 assert.equal(accounts.size, 0);
+const emptyQueue = await internal("claim", {});
+assert.equal(await emptyQueue.json(), null);
+assert.equal(emptyQueue.headers.get("retry-after"), "1800");
 assert.equal((await a.rpc.dashboard()).today?.status, "completed");
 await a.rpc.setEnabled({ enabled: false });
 assert.equal((await a.rpc.dashboard()).enabled, false);
 assert.equal((await b.rpc.dashboard()).enabled, true);
+await a.rpc.setEnabled({ enabled: true });
+assert.equal((await a.rpc.dashboard()).enabled, true);
+await a.rpc.retry();
+await a.rpc.setEnabled({ enabled: false });
 await a.rpc.deleteAccount({ confirm: true });
 await assert.rejects(a.rpc.dashboard(), /请先登录/);
 assert.equal((await b.rpc.dashboard()).today?.status, "completed");

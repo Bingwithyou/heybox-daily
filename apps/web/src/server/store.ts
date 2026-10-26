@@ -32,6 +32,10 @@ type JobRow = {
 export class Store {
   readonly db: Database;
   readonly now: () => number;
+  private retryAfterSeconds = 1800;
+  get retryAfter() {
+    return this.retryAfterSeconds;
+  }
   constructor(db: Database, now = Date.now) {
     this.db = db;
     this.now = now;
@@ -106,23 +110,48 @@ export class Store {
   async schedule() {
     const now = this.now();
     const date = beijingDate(now);
-    await this.recover();
     if (now >= Date.parse(`${date}T00:01:00+08:00`)) {
-      await this.sql(
+      const created = await this.sql(
         `INSERT OR IGNORE INTO jobs(id,user_id,date,status,available_at,created_at,updated_at)
         SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),
-        user_id,?,'queued',?,?,? FROM hosting WHERE enabled=1 AND credential_state='valid'`,
+        user_id,?,'queued',?,?,? FROM hosting h WHERE enabled=1 AND credential_state='valid'
+        AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.user_id=h.user_id AND j.date=?) RETURNING id`,
         date,
         now,
         now,
         now,
-      ).run();
+        date,
+      ).all<{ id: string }>();
+      return created.results.length;
     }
+    return 0;
+  }
+  async cleanup() {
+    const now = this.now();
     await this.db.batch([
       this.sql("DELETE FROM rate_limits WHERE expires_at<?", now),
       this.sql("DELETE FROM session WHERE expires_at<?", now),
       this.sql("DELETE FROM jobs WHERE updated_at<?", now - 30 * 86400_000),
     ]);
+  }
+  private async nextWorkAt() {
+    const now = this.now();
+    const row = await this.sql(
+      `SELECT MIN(CASE WHEN j.date<>? THEN ?
+        WHEN j.status='running' THEN COALESCE(j.lease_until+1,?)
+        ELSE MAX(j.available_at,COALESCE((SELECT MAX(other.lease_until)+1 FROM jobs other
+          WHERE other.user_id=j.user_id AND other.lease_until>=?),0)) END) AS due
+      FROM jobs j JOIN hosting h ON h.user_id=j.user_id
+      WHERE j.status IN ('queued','running') AND h.enabled=1 AND h.credential_state='valid'`,
+      beijingDate(now),
+      now,
+      now,
+      now,
+    ).first<{ due: number | null }>();
+    const midnight = Date.parse(`${beijingDate(now)}T00:00:00+08:00`) + 86400_000;
+    const due = Math.min(row?.due ?? now + 1_800_000, midnight);
+    this.retryAfterSeconds = Math.max(1, Math.min(1800, Math.ceil((due - now) / 1000)));
+    return due;
   }
   private async recover() {
     const now = this.now();
@@ -141,6 +170,7 @@ export class Store {
     ]);
   }
   async claim(): Promise<Job | null> {
+    if ((await this.nextWorkAt()) > this.now()) return null;
     await this.recover();
     const now = this.now();
     const lease = crypto.randomUUID();
@@ -158,7 +188,10 @@ export class Store {
       beijingDate(now),
       now,
     ).first<JobRow>();
-    if (!row) return null;
+    if (!row) {
+      await this.nextWorkAt();
+      return null;
+    }
     const credential = await this.sql(
       "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND enabled=1",
       row.user_id,

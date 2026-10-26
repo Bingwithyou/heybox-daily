@@ -30,3 +30,22 @@ test('the login server requires service authentication before parsing or calling
     assert.equal(response.status, 401);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+test('the wakeup endpoint requires the service token and only signals the existing queue', async () => {
+  let wakes = 0;
+  const store = new ChallengeStore({ begin: async () => assert.fail('unexpected login'),
+    send: async () => assert.fail('unexpected captcha'), verify: async () => assert.fail('unexpected verify') });
+  const token = 'a'.repeat(64);
+  const server = createRunnerServer(store, token, Buffer.alloc(32).toString('base64'), () => { wakes++; });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const url = `http://127.0.0.1:${address.port}/tasks/wake`;
+  try {
+    assert.equal((await fetch(url, { method: 'POST' })).status, 401);
+    assert.equal(wakes, 0);
+    assert.equal((await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}` } })).status, 204);
+    assert.equal(wakes, 1);
+    assert.equal((await fetch(url, { headers: { authorization: `Bearer ${token}` } })).status, 405);
+    assert.equal(wakes, 1);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+});

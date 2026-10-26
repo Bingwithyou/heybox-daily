@@ -5,7 +5,7 @@ import type { Config } from "../../../dist/types.js";
 import { fileURLToPath } from "node:url";
 import { LoginFailure } from "@heybox/contracts";
 
-export function createMockRunner(token: string, key: string) {
+export function createMockRunner(token: string, key: string, wake = () => {}) {
   const store = new ChallengeStore({
     begin: async (phone) => {
       if (phone === "+8613900000000") throw new LoginFailure();
@@ -39,7 +39,7 @@ export function createMockRunner(token: string, key: string) {
       return { status: "authenticated", config };
     },
   });
-  return createRunnerServer(store, token, key);
+  return createRunnerServer(store, token, key, wake);
 }
 if (process.argv[1] === fileURLToPath(import.meta.url))
   createMockRunner(process.env.RUNNER_SERVICE_TOKEN || "", process.env.CREDENTIAL_KEY || "").listen(

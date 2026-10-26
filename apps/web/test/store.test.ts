@@ -7,6 +7,7 @@ import { beijingDate, nextRunAt, type Credential } from "@heybox/contracts";
 
 function fixture() {
   const db = new DatabaseSync(":memory:");
+  const queries: Array<{ sql: string; values: unknown[] }> = [];
   db.exec(readFileSync(new URL("../migrations/0001_hosting.sql", import.meta.url), "utf8"));
   class Query implements Statement {
     readonly sql: string;
@@ -19,6 +20,7 @@ function fixture() {
       return this;
     }
     execute() {
+      queries.push({ sql: this.sql, values: this.values });
       const stmt = db.prepare(this.sql);
       return stmt.all(...(this.values as Array<string | number | null>));
     }
@@ -49,6 +51,7 @@ function fixture() {
   let now = Date.parse("2026-10-27T00:01:00+08:00");
   return {
     db,
+    queries,
     store: new Store(adapter, () => now),
     advance: (ms: number) => {
       now += ms;
@@ -60,6 +63,94 @@ const credential = (account: string): Credential => ({
   account,
   version: crypto.randomUUID(),
   ciphertext: "encrypted-private-value",
+});
+
+test("an idle queue uses one indexed read and no UPDATE, regardless of completed history", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    f.db.prepare("UPDATE jobs SET status='completed' WHERE user_id=?").run(id);
+    const insert = f.db.prepare(
+      "INSERT INTO jobs(id,user_id,date,status,available_at,created_at,updated_at) VALUES(?,?,?,'completed',0,0,0)",
+    );
+    for (let day = 1; day <= 1000; day++) insert.run(String(day), id, `history-${day}`);
+    f.queries.length = 0;
+    assert.equal(await f.store.claim(), null);
+    assert.equal(f.store.retryAfter, 1800);
+    assert.equal(f.queries.length, 1);
+    const query = f.queries[0];
+    assert.match(query.sql.trim(), /^SELECT/);
+    const plan = f.db
+      .prepare(`EXPLAIN QUERY PLAN ${query.sql}`)
+      .all(...(query.values as Array<string | number | null>));
+    assert.ok(plan.some((row) => String(row.detail).includes("jobs_ready")));
+    assert.ok(!plan.some((row) => /SCAN j\b/.test(String(row.detail))));
+  } finally {
+    f.close();
+  }
+});
+
+test("idle retry hints respect delayed retries and a revoked process lease", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const first = (await f.store.claim())!;
+    await f.store.finish(first.id, first.lease, first.credential.version, {
+      status: "failed",
+      reason: "upstream",
+    });
+    assert.equal(await f.store.claim(), null);
+    assert.equal(f.store.retryAfter, 60);
+    f.advance(60_000);
+    const second = (await f.store.claim())!;
+    assert.ok(second);
+    await f.store.enroll(credential("123"));
+    assert.equal(await f.store.claim(), null);
+    assert.equal(f.store.retryAfter, 301);
+    f.advance(300_001);
+    assert.ok(await f.store.claim());
+  } finally {
+    f.close();
+  }
+});
+
+test("a lease extending past midnight does not delay the cross-day check", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    f.advance(86339_000);
+    const old = (await f.store.claim())!;
+    assert.ok(old);
+    assert.equal(await f.store.claim(), null);
+    assert.equal(f.store.retryAfter, 1);
+    f.advance(1000);
+    assert.equal(await f.store.claim(), null);
+    assert.equal(
+      f.db.prepare("SELECT status FROM jobs WHERE id=?").get(old.id)?.status,
+      "cancelled",
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("hourly scheduling reports only newly created jobs and leaves cleanup to the daily pass", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    f.db.prepare("INSERT INTO rate_limits VALUES('expired',1,0)").run();
+    f.queries.length = 0;
+    assert.equal(await f.store.schedule(), 0);
+    assert.ok(!f.queries.some((query) => /DELETE|UPDATE/.test(query.sql)));
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get()?.n, 1);
+    f.advance(86400_000);
+    assert.equal(await f.store.schedule(), 1);
+    assert.equal(await f.store.schedule(), 0);
+    await f.store.cleanup();
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM rate_limits").get()?.n, 0);
+  } finally {
+    f.close();
+  }
 });
 
 test("enrollment, scheduling and manual retries never duplicate a user/day job", async () => {

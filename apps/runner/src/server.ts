@@ -13,13 +13,15 @@ async function body(request: IncomingMessage) {
   for await (const chunk of request) { input += chunk; if (Buffer.byteLength(input) > 4096) throw new Error('请求过大'); }
   return JSON.parse(input) as unknown;
 }
-export function createRunnerServer(store: ChallengeStore, token: string, key: string) {
+export function createRunnerServer(store: ChallengeStore, token: string, key: string, wake?: () => void) {
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json'); response.setHeader('cache-control', 'no-store');
     if (!authorized(request.headers.authorization, token)) { response.writeHead(401).end('{"error":"服务认证失败"}'); return; }
     if (request.method !== 'POST') { response.writeHead(405).end('{}'); return; }
     try {
-      if (request.url === '/login/begin') {
+      if (request.url === '/tasks/wake' && wake) {
+        wake(); response.writeHead(204).end();
+      } else if (request.url === '/login/begin') {
         const input = beginSchema.parse(await body(request));
         response.end(JSON.stringify(await store.begin(input.phone, input.binding)));
       } else if (request.url === '/login/verify') {
