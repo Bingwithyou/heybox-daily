@@ -1,18 +1,19 @@
 // Web signing algorithm adapted from XiaHouSheng/heybox-core (MIT).
 // See third-party/heybox-core-LICENSE and NOTICE.md.
 import { createHash, randomBytes } from 'node:crypto';
+import type { WebSignature } from './types.js';
 
 const alphabet = 'AB45STUVWZEFGJ6CH01D237IXYPQRKLMN89';
-const md5 = value => createHash('md5').update(String(value)).digest('hex');
-const mapChars = (text, chars) => [...text].map(c => chars[c.charCodeAt(0) % chars.length]).join('');
-const double = n => n & 128 ? ((n << 1) ^ 27) & 255 : n << 1;
-const triple = n => double(n) ^ n;
-const k = n => triple(double(n));
-const c = n => k(triple(double(n)));
-const s = n => c(n) ^ k(n) ^ triple(n);
-export const normalizePath = path => `/${path.split('/').filter(Boolean).join('/')}/`;
+const md5 = (value: string) => createHash('md5').update(value).digest('hex');
+const mapChars = (text: string, chars: string) => [...text].map(c => chars[c.charCodeAt(0) % chars.length]).join('');
+const double = (n: number) => n & 128 ? ((n << 1) ^ 27) & 255 : n << 1;
+const triple = (n: number) => double(n) ^ n;
+const k = (n: number) => triple(double(n));
+const c = (n: number) => k(triple(double(n)));
+const s = (n: number) => c(n) ^ k(n) ^ triple(n);
+export const normalizePath = (path: string) => `/${path.split('/').filter(Boolean).join('/')}/`;
 
-export function webSignature(path, time = Math.floor(Date.now() / 1000), nonce = randomBytes(16).toString('hex').toUpperCase()) {
+export function webSignature(path: string, time = Math.floor(Date.now() / 1000), nonce = randomBytes(16).toString('hex').toUpperCase()): WebSignature {
   const parts = [mapChars(String(time + 1), alphabet.slice(0, -2)), mapChars(normalizePath(path), alphabet), mapChars(nonce, alphabet)];
   let mixed = '';
   for (let i = 0; i < Math.max(...parts.map(p => p.length)); i++) {

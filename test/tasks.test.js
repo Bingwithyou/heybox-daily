@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { snapshot, signedToday, runDaily, selectShare } from '../src/tasks.js';
+import { snapshot, signedToday, runDaily, selectShare } from '../dist/tasks.js';
 
 const now = () => Date.parse('2026-10-26T12:00:00Z');
 function result(states = ['finish', 'finish', 'finish']) {

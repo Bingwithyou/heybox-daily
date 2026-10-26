@@ -10,8 +10,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: docker compose build
+      - run: npm install --global pnpm@12.15.0
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: docker compose build heybox login
       - name: Check image entrypoint without account credentials
         run: docker run --rm --tmpfs /app/state heybox-daily-heybox help
+      - name: Check login image entrypoint
+        run: docker run --rm --tmpfs /app/state heybox-daily-login help

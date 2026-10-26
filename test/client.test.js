@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { HeyboxClient } from '../src/client.js';
-import { validateConfig } from '../src/config.js';
-import { webSignature } from '../src/signature.js';
-import { androidBase64, shareEvent, encryptReport } from '../src/report.js';
+import { HeyboxApiError, HeyboxClient } from '../dist/client.js';
+import { validateConfig } from '../dist/config.js';
+import { webSignature } from '../dist/signature.js';
+import { androidBase64, shareEvent, encryptReport } from '../dist/report.js';
 import { createHash } from 'node:crypto';
 
 const config = { session: { heybox_id: '12345', pkey: 'secret', x_xhh_tokenid: 'device-token', device_id: 'device' },
@@ -52,4 +52,15 @@ test('invalid credentials and unsupported versions fail before network calls', (
   assert.throws(() => validateConfig(invalid));
   const version = structuredClone(config); version.app.version = 'future';
   assert.throws(() => validateConfig(version), /配套资源/);
+});
+
+test('login error categories are useful without exposing raw service messages', () => {
+  const wrong = new HeyboxApiError('/account/login_code/', 'failed', '验证码错误，private-value');
+  assert.equal(wrong.retryCode, true);
+  assert.ok(!wrong.message.includes('private-value'));
+  for (const detail of ['验证码已过期 private-value', '请求过于频繁 private-value']) {
+    const error = new HeyboxApiError('/account/login_code/', 'failed', detail);
+    assert.equal(error.retryCode, false);
+    assert.ok(!error.message.includes('private-value'));
+  }
 });

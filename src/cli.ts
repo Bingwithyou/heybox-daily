@@ -5,9 +5,15 @@ import { inspect, runDaily } from './tasks.js';
 const command = process.argv[2] || 'check';
 try {
   if (['--help', '-h', 'help'].includes(command)) {
-    console.log('用法：node src/cli.js check|run\ncheck 只查看状态；run 完成当天未完成的签到与三项分享任务。');
+    console.log('用法：node dist/cli.js login|check|run\nlogin 短信登录（使用登录镜像）；check 查看状态；run 完成当天未完成的签到与三项分享任务。');
+  } else if (command === 'login') {
+    const { createInterface } = await import('node:readline/promises');
+    const { runSmsLogin } = await import('./login.js');
+    const input = createInterface({ input: process.stdin, output: process.stdout });
+    try { await runSmsLogin({ ask: question => input.question(question) }); }
+    finally { input.close(); }
   } else {
-    if (!['check', 'run'].includes(command)) throw new Error('命令应为 check 或 run');
+    if (!['check', 'run'].includes(command)) throw new Error('命令应为 login、check 或 run');
     const config = loadConfig();
     const client = new HeyboxClient(config);
     if (command === 'check') {
@@ -23,6 +29,6 @@ try {
     }
   }
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : '执行失败');
   process.exitCode = 1;
 }

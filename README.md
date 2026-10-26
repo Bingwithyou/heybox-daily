@@ -1,100 +1,74 @@
-# heybox-daily
+<h1 align="center">Heybox Daily</h1>
+<p align="center">在自己的服务器上，完成小黑盒每日签到和分享任务。</p>
+<p align="center">
+  <a href="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml"><img src="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+</p>
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="docs/usage.md">使用说明</a> ·
+  <a href="https://github.com/Cansiny0320/heybox-daily/issues">问题反馈</a>
+</p>
 
-在 Linux 服务器上跑小黑盒每日签到和分享任务。用 Docker 部署，跑完就退出，定时执行交给 cron。
+Heybox Daily 用 Docker 在 Linux 服务器上运行，处理每日签到、分享帖子、分享游戏和分享游戏评价。完成的任务会跳过，执行后会重新查询状态，确认任务已经结算。
 
-目前支持签到、分享帖子、分享游戏、分享游戏评价。运行前先查当天状态，完成的任务会跳过；执行后再查一次，确认任务已经结算。签名在本地生成，不依赖第三方签名服务。
+准备好配套签名资源后，可以直接在服务器上通过手机号和验证码登录，不需要连接 Android 手机或导出 Cookie。目前签名资源仍需手动准备，具体要求见 [首次准备](docs/usage.md#首次准备)。
 
-## 部署
+## 能帮你做什么？
 
-服务器需要 Docker 和 Docker Compose。
+- **完成每日任务**：处理签到和三项分享任务，签名在本地生成。
+- **短信登录**：服务器自动获取设备令牌，输入手机号和验证码即可保存登录态。
+- **避免重复执行**：先看今天完成了哪些，再处理剩下的任务；重复运行也会跳过已完成项。
+- **确认执行结果**：上报成功后继续查任务状态，没有结算就报错，不把请求成功当成任务完成。
+- **按时运行**：跑完就退出，用服务器的 cron 每天调用一次即可。
+
+## 快速开始
+
+**1 · 拉取代码。** 服务器先安装 Docker 和 Docker Compose，再执行：
 
 ```bash
 git clone https://github.com/Cansiny0320/heybox-daily.git
 cd heybox-daily
 ```
 
-把准备好的 `private` 目录复制到仓库根目录。里面需要这些文件：
+**2 · 准备签名资源。** 按 [首次准备](docs/usage.md#首次准备) 把资源放到 `private/assets`。这些文件不会提交到 Git，也不会打进镜像。
 
-```text
-private/
-├── config.json
-└── assets/
-    ├── app-metadata.apk
-    ├── libnative-lib.so
-    ├── libglesv3_1.so
-    └── shader-code.bin
-```
-
-`config.json` 存放你自己的 APP 登录态，其他文件用于本地签名。这些文件不会提交到 Git，也不会打进镜像。已有完整 `private` 目录时，直接复制即可；第一次准备的方法见下文。
+**3 · 登录并运行。**
 
 ```bash
-chmod 700 private
-chmod 600 private/config.json
-docker compose build
+docker compose build heybox login
+docker compose run --rm login
 docker compose run --rm heybox check
 docker compose run --rm heybox run
 ```
 
-`check` 只检查登录、签名和当天任务状态。`run` 会执行未完成的任务；登录过期、接口异常或任务没有结算时，会打印原因并以非零状态退出。
+`login` 会提示输入手机号和验证码。浏览器只在登录时运行，`check` 查看当天状态，`run` 执行未完成的任务。定时运行和更新方法见 [使用说明](docs/usage.md)。
 
-## 定时执行
+## 使用提示
 
-用 `crontab -e` 添加一行，路径换成你的实际目录。下面按**服务器本地时间**每天 09:15 执行，容器内的当天判断使用北京时间。
+- **注意 APP 版本**：当前只验证了 Android **1.3.398 / build 1142** 和版本 **14** 的签名资源，其他版本暂不支持。
+- **手机只用来收验证码**：服务器独立运行，登录失效时重新执行 `docker compose run --rm login`。
+- **分享不会给别人发消息**：通过 APP 的分享事件接口上报，不会实际往微信发送消息，也不会替你发帖或写评价。
+- **留意执行失败**：登录过期、接口异常或任务未结算时，会打印原因并以非零状态退出，详细记录见服务器日志。
 
-```cron
-15 9 * * * cd /opt/heybox-daily && /usr/bin/docker compose run --rm -T heybox run >> state/cron.log 2>&1
-```
+三项分享任务已通过真实账号确认完成并增加奖励。签到已验证能识别当天已签到，首次未签到日领取奖励仍待验证。Linux ARM64 VPS 已验证从空白登录态获取设备令牌、短信登录和任务读取；Linux AMD64 由 GitHub CI 检查构建和离线测试。
 
-添加前先 `mkdir -p state`，并用 `command -v docker` 确认 Docker 路径。容器用文件锁避免重复运行。查看最近的执行记录：
+## 数据与隐私
 
-```bash
-tail -n 50 state/cron.log
-```
+登录信息和签名资源保存在你自己的 `private` 目录。登录时会访问小黑盒官网及其设备验证服务，日常任务请求小黑盒接口，不使用第三方签名服务。构建镜像时会下载依赖。
 
-更新代码后重新构建即可：
+`config.json` 以 `600` 权限保存登录信息，请勿公开或分享给其他人。手机号和验证码不会保存；新登录通过接口校验后才替换配置，失败时保留原文件。升级代码会保留该目录，备份时也需要单独保留。
 
-```bash
-git pull --ff-only
-docker compose build
-docker compose run --rm heybox check
-```
+## 反馈
 
-## 第一次准备配置
+遇到问题或有建议，欢迎提交 [Issue](https://github.com/Cansiny0320/heybox-daily/issues)，附上服务器架构、APP 版本和脱敏后的报错。
 
-在连接了 Android 手机的电脑上操作，需要 Python 3 和 `adb`。手机先登录小黑盒，并允许 USB 调试：
+## 许可证与致谢
 
-```bash
-python3 scripts/import-android.py
-```
+项目代码使用 [MIT License](LICENSE)。依赖与协议参考见 [NOTICE.md](NOTICE.md)，APP 安装包及签名资源不随仓库发布。开发和测试命令见 [使用说明](docs/usage.md#开发)。
 
-连接多台设备时加 `--serial 设备序列号`。脚本读取 APP 当前登录态，保存到 `private/config.json`，不会把凭据打印出来。也可以参考 [config.example.json](config.example.json) 手动填写。网页 Cookie 不能替代这里的 APP 登录态。
+## 赞助
 
-签名资源需要自行准备小黑盒 **1.3.398 / build 1142** 的 `base.apk` 和配套 **版本 14** 的 `shader-code.bin`，再执行：
+如果你喜欢这个项目，可以通过微信或支付宝支持后续开发。
 
-```bash
-python3 scripts/prepare-assets.py --apk /path/to/base.apk --shader /path/to/shader-code.bin
-```
-
-脚本会提取原生库并检查资源是否匹配。`shader-code.bin` 是 APP 通过 `/app/client/bootstrap` 获取的动态资源，不在 APK 内；本项目暂未提供自动获取流程。没有这份配套资源，无法运行签到。
-
-准备完成后，把整个 `private` 目录传到服务器。服务器运行时不需要连接手机；登录过期后，在手机重新登录、导入并替换 `config.json`。
-
-## 当前限制
-
-- 目前只验证了上述 APP 和签名资源版本，不能保证换版本后仍然可用。
-- 已在 Linux ARM64 容器中构建并读取真实账号状态，重复运行会跳过当天已完成的任务。GitHub CI 负责 Linux AMD64 构建和离线测试。
-- 三项分享任务已通过真实账号确认完成并增加奖励。签到请求已验证能识别当天已签到；尚未验证未签到日首次领取奖励。
-- 分享任务通过 APP 的分享事件接口上报，不会实际往微信发送消息，也不会替你发帖或写评价。
-- 只处理签到和这三项分享任务，不处理关注、发帖、充值等其他任务。
-
-## 开发
-
-业务代码使用 Node.js 24 内置模块；原生签名使用 Java 17、Maven 和 Unidbg。
-
-```bash
-npm test
-mvn -f signer/pom.xml package dependency:copy-dependencies -DincludeScope=runtime
-npm run check
-```
-
-MIT License。依赖与协议参考见 [NOTICE.md](NOTICE.md)。APP 资源不随仓库发布。
+![微信与支付宝赞助二维码](.github/sponsorship/sponsorship-cats.png)

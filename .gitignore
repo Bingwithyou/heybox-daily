@@ -2,6 +2,7 @@ private/
 .research/
 state/
 node_modules/
+dist/
 signer/target/
 *.log
 .DS_Store
