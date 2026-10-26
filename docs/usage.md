@@ -77,6 +77,11 @@ docker compose build heybox login
 docker compose run --rm heybox check
 ```
 
+## 兼容性
+
+- Linux ARM64：已在 VPS 上实测短信登录、签到和三项分享，奖励正常到账。
+- Linux AMD64：已通过 CI 构建和离线签名检查，尚未做真实账号验证。
+
 ## 开发
 
 业务代码使用 TypeScript 和 Node.js 24，通过 pnpm 管理依赖、编译和测试。APP 和 Web 签名均由 TypeScript 计算，登录使用 Playwright Core 和 Chromium。首次使用时安装项目固定的 pnpm 版本：
