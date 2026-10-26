@@ -95,7 +95,9 @@ mvn -f signer/pom.xml package dependency:copy-dependencies -DincludeScope=runtim
 pnpm check
 ```
 
-`pnpm build` 将 `src/*.ts` 编译到 `dist/`，Docker 镜像在构建时完成编译。运行容器不需要在服务器额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，使用 `node dist/cli.js login`，并通过 `CHROMIUM_PATH` 指定 Chromium 可执行文件。
+`pnpm build` 将业务代码和类型声明生成到 `dist/`。`pnpm typecheck` 先构建业务代码，再检查测试的类型；`pnpm test` 完成这两步后，用 Node.js 24 运行 `test/*.test.ts`。测试仍调用编译后的业务代码。
+
+Docker 镜像在构建时完成编译，服务器不需要额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，使用 `node dist/cli.js login`，并通过 `CHROMIUM_PATH` 指定 Chromium 可执行文件。
 
 CI 另在禁用网络、未挂载账号配置的容器中验证原生签名，确认镜像自带的资源完整可用。
 

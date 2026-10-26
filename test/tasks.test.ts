@@ -1,6 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { snapshot, signedToday, runDaily, selectShare } from '../dist/tasks.js';
+import type { ShareEvent, TaskClient } from '../dist/types.js';
+
+type WebArguments = Parameters<TaskClient['web']>;
+type ClientOverrides = Partial<Omit<TaskClient, 'web'>> & { web?: (...args: WebArguments) => Promise<unknown> };
+function mockClient({ web, ...overrides }: ClientOverrides): TaskClient {
+  const unexpected = () => assert.fail('unexpected API call');
+  return {
+    tasks: unexpected, signState: unexpected, sign: unexpected, report: unexpected,
+    web: async <T>(...args: WebArguments) => {
+      assert.ok(web, 'unexpected web API call');
+      return await web(...args) as T;
+    },
+    ...overrides,
+  };
+}
 
 const now = () => Date.parse('2026-10-26T12:00:00Z');
 function result(states = ['finish', 'finish', 'finish']) {
@@ -15,7 +30,10 @@ const quiet = () => {};
 test('rejects empty data, a different account and the obsolete website task set', () => {
   assert.throws(() => snapshot({}, '12345'));
   assert.throws(() => snapshot(result(), '99999'), /账号/);
-  const old = result(); old.task_list[0].tasks[3].report_extra.task_id = '11';
+  const old = result();
+  const task = old.task_list[0].tasks[3];
+  assert.ok('report_extra' in task);
+  task.report_extra.task_id = '11';
   assert.throws(() => snapshot(old, '12345'), /任务/);
 });
 test('signed_date must match the current day in Asia/Shanghai', () => {
@@ -25,52 +43,55 @@ test('signed_date must match the current day in Asia/Shanghai', () => {
   assert.equal(signedToday(state, Date.parse('2026-10-26T16:00:00Z')), false);
 });
 test('finished tasks never trigger a sign request or share events', async () => {
-  const client = { tasks: async () => result(), signState: async () => state,
-    sign: () => assert.fail('unexpected sign'), report: () => assert.fail('unexpected report') };
+  const client = mockClient({ tasks: async () => result(), signState: async () => state,
+    sign: () => assert.fail('unexpected sign'), report: () => assert.fail('unexpected report') });
   const summary = await runDaily(client, '12345', { now, log: quiet });
   assert.equal(summary.completed, true);
   assert.equal(summary.expDelta, 0);
 });
 test('sign ignore from a previous day is not counted as successful', async () => {
-  const client = { tasks: async () => result(), signState: async () => ({ state: 'ok', signed_date: 20751 }),
-    sign: async () => ({ state: 'ignore', signed_date: 20751 }) };
+  const client = mockClient({ tasks: async () => result(), signState: async () => ({ state: 'ok', signed_date: 20751 }),
+    sign: async () => ({ state: 'ignore', signed_date: 20751 }) });
   await assert.rejects(runDaily(client, '12345', { now, log: quiet, sleep: async () => {} }), /签到/);
 });
 test('report success without a finished task fails after bounded polling', async () => {
-  const client = { tasks: async () => result(['waiting', 'finish', 'finish']), signState: async () => state,
-    web: async () => ({ links: [{ linkid: 'article', h_src: 'source' }] }), report: async () => ({}) };
+  const client = mockClient({ tasks: async () => result(['waiting', 'finish', 'finish']), signState: async () => state,
+    web: async () => ({ links: [{ linkid: 'article', h_src: 'source' }] }), report: async () => ({}) });
   await assert.rejects(runDaily(client, '12345', { now, log: quiet, sleep: async () => {} }), /未结算/);
 });
 test('settlement is read back and already finished tasks stay skipped', async () => {
-  let reads = 0; const events = [];
-  const client = { tasks: async () => result([reads++ ? 'finish' : 'waiting', 'finish', 'finish']),
+  let reads = 0; const events: ShareEvent[] = [];
+  const client = mockClient({ tasks: async () => result([reads++ ? 'finish' : 'waiting', 'finish', 'finish']),
     signState: async () => state,
     web: async () => ({ links: [{ link_id: 'article', h_src: 'source' }] }),
-    report: async e => { events.push(e); } };
+    report: async e => { events.push(e); } });
   const summary = await runDaily(client, '12345', { now, log: quiet, sleep: async () => {} });
   assert.equal(summary.completed, true);
   assert.deepEqual(events.map(e => e.path), ['/share/behavior/show', '/share/behavior/tap', '/share/behavior/success']);
 });
 test('login/readback errors stop the job immediately', async () => {
-  const client = { tasks: async () => { throw new Error('登录过期'); }, signState: () => assert.fail() };
+  const client = mockClient({ tasks: async () => { throw new Error('登录过期'); }, signState: () => assert.fail() });
   await assert.rejects(runDaily(client, '12345', { log: quiet }), /登录过期/);
 });
 test('post selection includes the feed pull parameters required by the API', async () => {
-  const candidate = await selectShare({ web: async (endpoint, query) => {
+  const candidate = await selectShare(mockClient({ web: async (endpoint, query) => {
     assert.equal(endpoint, '/bbs/app/feeds');
+    assert.ok(query);
     assert.equal(query.pull, '1');
     assert.equal(query.last_pull, '1');
     return { links: [{ link_id: 'existing-post', h_src: 'source' }] };
-  } }, '1');
+  } }), '1');
+  assert.ok(candidate.src === 'link');
   assert.equal(candidate.link_id, 'existing-post');
 });
 test('game review share uses an existing review author and the canonical share_data path', async () => {
-  const candidate = await selectShare({ web: async (endpoint, query) => {
+  const candidate = await selectShare(mockClient({ web: async (endpoint, query) => {
     if (endpoint === '/game/all_recommend/v2') return { all_list: [{ appid: 'game', h_src: 'source' }] };
     if (endpoint === '/bbs/app/link/game/comments') return { links: [{ linkid: 'review', userid: 'author' }] };
     assert.equal(endpoint, '/game/comment/share_data/');
+    assert.ok(query);
     assert.equal(query.userid, 'author');
     return { comment_detail: { linkid: 'share-review' } };
-  } }, '31');
+  } }), '31');
   assert.deepEqual(candidate, { src: 'game_comment', link_id: 'share-review' });
 });

@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto';
 
 test('bundled native resources match the verified version and SHA-256 manifest', () => {
   const directory = new URL('../third-party/heybox-assets/', import.meta.url);
-  const manifest = JSON.parse(readFileSync(new URL('manifest.json', directory), 'utf8'));
+  const manifest: { appVersion: string; appBuild: string; shaderVersion: string; files: Record<string, string> } =
+    JSON.parse(readFileSync(new URL('manifest.json', directory), 'utf8'));
   assert.equal(manifest.appVersion, '1.3.398');
   assert.equal(manifest.appBuild, '1142');
   assert.equal(manifest.shaderVersion, '14');

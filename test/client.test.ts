@@ -18,24 +18,26 @@ test('Android base64 includes line breaks and the final newline used by sid', ()
   const encoded = androidBase64(Buffer.alloc(60));
   assert.deepEqual(encoded.split('\n').map(s => s.length), [76, 4, 0]);
   const payload = encryptReport([], '1700000000');
-  const md5 = value => createHash('md5').update(value).digest('hex');
+  const md5 = (value: string) => createHash('md5').update(value).digest('hex');
   assert.equal(payload.sid, md5(payload.key + payload.time) + md5(payload.data));
 });
 test('share show and tap use distinct event types and platform fields', () => {
-  const addition = { src: 'game_comment', link_id: 'test' };
+  const addition = { src: 'game_comment', link_id: 'test' } as const;
   assert.equal(shareEvent('show', addition, 'session').addition.plat, undefined);
   assert.equal(shareEvent('tap', addition, 'session').type, '4');
   assert.equal(shareEvent('success', addition, 'session').addition.plat, 'WechatSession');
+  // @ts-expect-error Verify the runtime guard for unsupported actions as well.
   assert.throws(() => shareEvent('publish', addition, 'session'));
 });
 test('APP WebView profile and aliases are retained, redirects are disabled', async () => {
   const client = new HeyboxClient(config, { fetchImpl: async (url, options) => {
+    assert.ok(typeof url === 'string');
     const parsed = new URL(url);
     assert.equal(parsed.hostname, 'api.xiaoheihe.cn');
     assert.equal(parsed.searchParams.get('x_app'), 'heybox');
     assert.equal(parsed.searchParams.get('x_os_type'), 'Android');
-    assert.match(options.headers.Cookie, /x_pkey=secret/);
-    assert.equal(options.redirect, 'error');
+    assert.match(new Headers(options?.headers).get('Cookie') ?? '', /x_pkey=secret/);
+    assert.equal(options?.redirect, 'error');
     return Response.json({ status: 'ok', result: { valid: true } });
   } });
   assert.deepEqual(await client.tasks(), { valid: true });
@@ -43,7 +45,7 @@ test('APP WebView profile and aliases are retained, redirects are disabled', asy
 test('HTTP errors, expired login and malformed replies cannot be mistaken for success', async () => {
   for (const response of [new Response('private data', { status: 500 }), Response.json({ status: 'relogin', msg: 'secret' }), Response.json({ status: 'failed', msg: 'secret' }), new Response('not JSON')]) {
     const client = new HeyboxClient(config, { fetchImpl: async () => response });
-    await assert.rejects(client.tasks(), error => !error.message.includes('secret') && !error.message.includes('private data'));
+    await assert.rejects(client.tasks(), (error: unknown) => error instanceof Error && !error.message.includes('secret') && !error.message.includes('private data'));
   }
 });
 test('invalid credentials and unsupported versions fail before network calls', () => {

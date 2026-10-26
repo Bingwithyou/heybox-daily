@@ -7,28 +7,47 @@ import { constants, generateKeyPairSync, privateDecrypt } from 'node:crypto';
 import { HeyboxApiError, HeyboxClient } from '../dist/client.js';
 import { saveConfig } from '../dist/config.js';
 import { createLoginConfig, encryptPhone, normalizePhone, runSmsLogin } from '../dist/login.js';
+import type { Config, Query } from '../dist/types.js';
+
+type LoginOptions = Parameters<typeof runSmsLogin>[0];
+type LoginClient = ReturnType<NonNullable<LoginOptions['clientFactory']>>;
+type NativeArguments = Parameters<LoginClient['native']>;
+type NativeStub = (...args: NativeArguments) => Promise<unknown>;
 
 const token = 'B' + 'a'.repeat(88);
 const taskResult = { user: { userid: '12345', level_info: { exp: 100, coin: 200 } }, task_list: [{ title: '每日任务', tasks:
   ['1', '19', '31'].map(id => ({ title: id, state: 'waiting', report_extra: { task_id: id } })) }] };
 const loginResult = { profile: { heybox_id: '12345' }, account_detail: { userid: '12345' }, pkey: 'new-private-key' };
 
-function fixture(overrides = {}) {
+function clientWith(native: NativeStub, overrides: Partial<Omit<LoginClient, 'native'>> = {}): LoginClient {
+  return {
+    native: async <T>(...args: NativeArguments) => await native(...args) as T,
+    tasks: async () => taskResult,
+    signState: async () => ({ state: 'ok', signed_date: 1 }),
+    ...overrides,
+  };
+}
+
+function nextAnswer(answers: string[]) {
+  const answer = answers.shift();
+  assert.ok(answer !== undefined, 'unexpected additional login prompt');
+  return answer;
+}
+
+function fixture(overrides: Partial<LoginOptions> = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), 'heybox-login-'));
   const file = path.join(directory, 'config.json');
   writeFileSync(file, 'existing configuration', { mode: 0o600 });
-  const questions = []; const logs = []; const requests = []; const answers = ['13800138000', '1234'];
-  const options = {
+  const questions: string[] = []; const logs: string[] = [];
+  const requests: Array<{ endpoint: string; config: Config; extra?: Query; body?: URLSearchParams }> = [];
+  const answers = ['13800138000', '1234'];
+  const options: LoginOptions = {
     file, preflight: () => {}, getDeviceToken: async () => token,
-    ask: async question => { questions.push(question); return answers.shift(); }, log: message => logs.push(message),
-    clientFactory: config => ({
-      native: async (endpoint, extra, body) => {
-        requests.push({ endpoint, config, extra, body });
-        if (endpoint === '/account/get_login_code/') return { remain_time: 60, not_register: 1 };
-        return structuredClone(loginResult);
-      },
-      tasks: async () => taskResult,
-      signState: async () => ({ state: 'ok', signed_date: 1 }),
+    ask: async question => { questions.push(question); return nextAnswer(answers); }, log: message => { logs.push(message); },
+    clientFactory: config => clientWith(async (endpoint, extra, body) => {
+      requests.push({ endpoint, config, extra, body });
+      if (endpoint === '/account/get_login_code/') return { remain_time: 60, not_register: 1 };
+      return structuredClone(loginResult);
     }),
     ...overrides,
   };
@@ -50,11 +69,13 @@ test('phone validation happens before a request and RSA uses the Android wire fo
 test('native form requests keep device token without requiring an account pkey', async () => {
   const config = createLoginConfig(token);
   const client = new HeyboxClient(config, { signer: () => ({ hkey: 'signed', _rnd: '14:1', nonce: 'nonce', _time: '1' }), fetchImpl: async (url, options) => {
+    assert.ok(typeof url === 'string');
     const parsed = new URL(url);
     assert.equal(parsed.searchParams.get('heybox_id'), '-1');
     assert.equal(parsed.searchParams.get('code'), '1234');
-    assert.equal(options.method, 'POST');
-    assert.equal(options.headers.Cookie, `pkey=; x_xhh_tokenid=${token}`);
+    assert.equal(options?.method, 'POST');
+    assert.equal(new Headers(options?.headers).get('Cookie'), `pkey=; x_xhh_tokenid=${token}`);
+    assert.ok(options?.body instanceof URLSearchParams);
     assert.equal(options.body.get('phone_num'), 'encrypted');
     return Response.json({ status: 'ok', result: loginResult });
   } });
@@ -69,8 +90,8 @@ test('SMS login starts anonymously, sends once and persists only after readback'
     assert.equal(f.requests[0].config.session.heybox_id, '-1');
     assert.equal(f.requests[0].config.session.pkey, '');
     assert.equal(f.requests[0].config.session.x_xhh_tokenid, token);
-    assert.equal(f.requests[1].extra.code, '1234');
-    assert.equal(f.requests[1].extra.is_new_device, '1');
+    assert.equal(f.requests[1].extra?.code, '1234');
+    assert.equal(f.requests[1].extra?.is_new_device, '1');
     assert.equal(f.questions.length, 2);
     const saved = JSON.parse(readFileSync(f.file, 'utf8'));
     assert.equal(saved.session.pkey, 'new-private-key');
@@ -91,7 +112,7 @@ test('SDK failure sends no SMS and preserves the existing config', async () => {
 });
 
 test('verification failure cannot replace an existing configuration', async () => {
-  const f = fixture({ clientFactory: () => ({ native: async endpoint => endpoint.includes('get_login_code') ? {} : loginResult,
+  const f = fixture({ clientFactory: () => clientWith(async endpoint => endpoint.includes('get_login_code') ? {} : loginResult, {
     tasks: async () => { throw new Error('readback failed'); }, signState: async () => ({}) }) });
   try {
     await assert.rejects(runSmsLogin(f.options), /readback failed/);
@@ -100,14 +121,12 @@ test('verification failure cannot replace an existing configuration', async () =
 });
 
 test('a rejected code can be corrected in the same session without another SMS', async () => {
-  let sends = 0; let attempts = 0; const devices = []; const answers = ['13800138000', '1111', '2222'];
-  const f = fixture({ ask: async () => answers.shift(), clientFactory: config => ({
-    native: async endpoint => {
-      if (endpoint.includes('get_login_code')) { sends++; return {}; }
-      devices.push(config.session.device_id);
-      if (++attempts === 1) throw new HeyboxApiError('/account/login_code/', 'failed', '验证码错误');
-      return loginResult;
-    }, tasks: async () => taskResult, signState: async () => ({ state: 'ok', signed_date: 1 }),
+  let sends = 0; let attempts = 0; const devices: string[] = []; const answers = ['13800138000', '1111', '2222'];
+  const f = fixture({ ask: async () => nextAnswer(answers), clientFactory: config => clientWith(async endpoint => {
+    if (endpoint.includes('get_login_code')) { sends++; return {}; }
+    devices.push(config.session.device_id);
+    if (++attempts === 1) throw new HeyboxApiError('/account/login_code/', 'failed', '验证码错误');
+    return loginResult;
   }) });
   try {
     await runSmsLogin(f.options);
@@ -121,11 +140,11 @@ test('a rejected code can be corrected in the same session without another SMS',
 test('cancelling or exhausting code attempts preserves config and never resends SMS', async () => {
   for (const codes of [[''], ['1111', '2222', '3333']]) {
     let sends = 0; let attempts = 0; const answers = ['13800138000', ...codes];
-    const f = fixture({ ask: async () => answers.shift(), clientFactory: () => ({ native: async endpoint => {
+    const f = fixture({ ask: async () => nextAnswer(answers), clientFactory: () => clientWith(async endpoint => {
       if (endpoint.includes('get_login_code')) { sends++; return {}; }
       attempts++;
       throw new HeyboxApiError('/account/login_code/', 'failed', '验证码错误');
-    } }) });
+    }) });
     try {
       await assert.rejects(runSmsLogin(f.options));
       assert.equal(sends, 1);
@@ -137,11 +156,11 @@ test('cancelling or exhausting code attempts preserves config and never resends 
 
 test('wrong account fields and rejected verification codes never persist a session', async () => {
   for (const mode of ['mismatch', 'expired']) {
-    const f = fixture({ clientFactory: () => ({ native: async endpoint => {
+    const f = fixture({ clientFactory: () => clientWith(async endpoint => {
       if (endpoint.includes('get_login_code')) return {};
       if (mode === 'expired') throw new Error('expired');
       return { ...loginResult, account_detail: { userid: 'different' } };
-    } }) });
+    }) });
     try {
       await assert.rejects(runSmsLogin(f.options));
       assert.equal(readFileSync(f.file, 'utf8'), 'existing configuration');

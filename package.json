@@ -9,10 +9,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm build && tsc -p tsconfig.test.json",
     "check": "pnpm build && node dist/cli.js check",
     "start": "pnpm build && node dist/cli.js run",
-    "test": "pnpm build && node --test test/*.test.js"
+    "test": "pnpm typecheck && node --test test/*.test.ts"
   },
   "license": "MIT",
   "packageManager": "pnpm@12.15.0",
