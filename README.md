@@ -1,5 +1,5 @@
 <h1 align="center">Heybox Daily</h1>
-<p align="center">在自己的服务器上，完成小黑盒每日签到和分享任务。</p>
+<p align="center">跑在自己服务器上的小黑盒签到脚本。</p>
 <p align="center">
   <a href="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml"><img src="https://github.com/Cansiny0320/heybox-daily/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
@@ -10,63 +10,62 @@
   <a href="https://github.com/Cansiny0320/heybox-daily/issues">问题反馈</a>
 </p>
 
-Heybox Daily 用 Docker 在 Linux 服务器上运行，处理每日签到、分享帖子、分享游戏和分享游戏评价。完成的任务会跳过，执行后会重新查询状态，确认任务已经结算。
+每天签到，完成分享帖子、游戏和游戏评价三项任务。已经做过的会跳过，跑完会再检查结果。
 
-项目已包含配套签名资源。服务器安装 Docker 和 Docker Compose 后，输入手机号和验证码即可登录，不需要准备 APK、连接 Android 手机或导出 Cookie。
-
-## 能帮你做什么？
-
-- **完成每日任务**：处理签到和三项分享任务，签名在本地生成。
-- **短信登录**：服务器自动获取设备令牌，输入手机号和验证码即可保存登录态。
-- **避免重复执行**：先看今天完成了哪些，再处理剩下的任务；重复运行也会跳过已完成项。
-- **确认执行结果**：上报成功后继续查任务状态，没有结算就报错，不把请求成功当成任务完成。
-- **按时运行**：跑完就退出，用服务器的 cron 每天调用一次即可。
+用 Docker 运行，输入手机号和短信验证码登录。需要的资源已经带好了，不用自己找 APK 或抓 Cookie，也不用一直连着手机。
 
 ## 快速开始
 
-**1 · 拉取代码。** 服务器先安装 Docker 和 Docker Compose，再执行：
+服务器先装好 Docker 和 Docker Compose，然后拉取项目：
 
 ```bash
 git clone https://github.com/Cansiny0320/heybox-daily.git
 cd heybox-daily
 ```
 
-**2 · 登录并运行。**
+构建镜像，按提示输入手机号和验证码：
 
 ```bash
 docker compose build heybox login
 docker compose run --rm login
+```
+
+登录后就可以查看和执行任务：
+
+```bash
+# 看今天的任务进度
 docker compose run --rm heybox check
+
+# 完成今天剩下的任务
 docker compose run --rm heybox run
 ```
 
-`login` 会提示输入手机号和验证码。浏览器只在登录时运行，`check` 查看当天状态，`run` 执行未完成的任务。定时运行和更新方法见 [使用说明](docs/usage.md)。
+程序跑完就退出。想每天自动运行，需要在服务器上加一个 cron 任务，配置方法和更新步骤见 [使用说明](docs/usage.md)。
 
-## 使用提示
+## 几点说明
 
-- **资源已经配套**：内置 Android **1.3.398 / build 1142 / shader 14** 的精简签名资源，约 2 MB。登录和签到时不下载 APK。
-- **手机只用来收验证码**：服务器独立运行，登录失效时重新执行 `docker compose run --rm login`。
-- **分享不会给别人发消息**：通过 APP 的分享事件接口上报，不会实际往微信发送消息，也不会替你发帖或写评价。
-- **留意执行失败**：登录过期、接口异常或任务未结算时，会打印原因并以非零状态退出，详细记录见服务器日志。
+- 服务器登录可能会让手机上的小黑盒退出登录。手机重新登录后，可以再跑一次 `check`，确认服务器是否还能用。
+- 提示登录过期时，重新执行 `docker compose run --rm login`。
+- 这里的分享任务不会真的给微信好友发消息，也不会替你发帖或写评价。
 
-Linux ARM64 VPS 已验证从空白登录态获取设备令牌并完成短信登录。2026-10-27 使用内置资源完成当天首次签到和三项分享任务，最终回读确认全部完成，经验增加 130、H 币增加 200。Linux AMD64 由 GitHub CI 检查构建、离线测试和断网原生签名。
+已在 Linux ARM64 VPS 上实测短信登录、签到和三项分享，奖励正常到账。AMD64 通过了 CI 构建和离线签名检查，还没做真实账号验证。
 
-## 数据与隐私
+## 账号信息
 
-登录信息保存在你自己的 `private` 目录。公共签名资源随项目和镜像提供，各账号共用，不包含个人登录数据。登录时会访问小黑盒官网及其设备验证服务，日常任务请求小黑盒接口，不使用第三方签名服务。构建镜像时会下载依赖。
+登录信息存在服务器上的 `private/config.json`，不要提交到 Git，也不要发给别人。更新代码会保留这个文件，迁移服务器时记得单独备份 `private` 目录。
 
-`config.json` 以 `600` 权限保存登录信息，请勿公开或分享给其他人。手机号和验证码不会保存；新登录通过接口校验后才替换配置，失败时保留原文件。升级代码会保留该目录，备份时也需要单独保留。
+手机号和验证码不会保存，登录失败也不会覆盖原来的配置。程序会访问小黑盒及其设备验证服务，签名在本地完成。
 
 ## 反馈
 
-遇到问题或有建议，欢迎提交 [Issue](https://github.com/Cansiny0320/heybox-daily/issues)，附上服务器架构、APP 版本和脱敏后的报错。
+有问题可以提 [Issue](https://github.com/Cansiny0320/heybox-daily/issues)，带上服务器架构和报错信息。发日志前先删掉账号、Cookie 等个人信息。
 
 ## 许可证与致谢
 
-项目代码使用 [MIT License](LICENSE)。内置的第三方签名资源不属于本项目的 MIT 授权范围，来源与依赖见 [NOTICE.md](NOTICE.md)。开发和测试命令见 [使用说明](docs/usage.md#开发)。
+代码使用 [MIT License](LICENSE)。内置的 APP 资源不属于本项目的 MIT 授权范围，来源和依赖见 [NOTICE.md](NOTICE.md)。开发和测试方法见 [使用说明](docs/usage.md#开发)。
 
 ## 赞助
 
-如果你喜欢这个项目，可以通过微信或支付宝支持后续开发。
+觉得好用的话，欢迎通过微信或支付宝支持一下。
 
 ![微信与支付宝赞助二维码](.github/sponsorship/sponsorship-cats.png)
