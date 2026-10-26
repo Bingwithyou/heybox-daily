@@ -6,6 +6,18 @@ import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnaps
 import { decryptCredential } from './crypto.ts';
 import { fileURLToPath } from 'node:url';
 
+export function failureCategory(error: unknown) {
+  const text = error instanceof Error ? error.message : '';
+  if (/原生签名|签名资源/.test(text)) return 'native_signer';
+  if (/设备令牌|官网/.test(text)) return 'device_token';
+  if (/频繁|次数.*限制/.test(text)) return 'upstream_rate_limit';
+  if (/验证码/.test(text)) return 'verification_code';
+  if (/^HTTP \d{3}：/.test(text)) return 'upstream_http';
+  if (/请求失败或超时/.test(text)) return 'upstream_network';
+  if (/接口未成功/.test(text)) return 'upstream_rejected';
+  return 'internal';
+}
+
 export function publicSnapshot(value: Inspection): TaskSnapshot {
   return { exp: value.exp, coin: value.coin, tasks: taskIds.map(id => ({ id,
     state: (id === 'sign' ? value.signed : value.tasks.find(task => task.id === id)?.state === 'finish') ? 'finish' : 'waiting' })) };
@@ -51,6 +63,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().then(value => process.stdout.write(JSON.stringify({ ok: true, value })), error => {
     const message = error instanceof Error ? error.message : '';
     const safe = /验证码.*(?:不正确|错误|过期)|频繁/.test(message) ? '验证码错误、过期或请求过于频繁，请核对后重试' : '小黑盒暂时无法完成登录，请稍后重试';
-    process.stdout.write(JSON.stringify({ ok: false, error: safe }));
+    process.stdout.write(JSON.stringify({ ok: false, error: safe, category: failureCategory(error) }));
   });
 }

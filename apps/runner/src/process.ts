@@ -26,8 +26,13 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
     child.on('exit', code => {
       if (code !== 0) return finish(new Error('执行进程异常退出'));
       try {
-        const parsed = JSON.parse(output) as { ok: boolean; value?: T; error?: string };
-        if (!parsed.ok) finish(new Error(parsed.error || '执行失败'));
+        const parsed = JSON.parse(output) as { ok: boolean; value?: T; error?: string; category?: string };
+        if (!parsed.ok) {
+          const categories = ['native_signer', 'device_token', 'upstream_rate_limit', 'verification_code', 'upstream_http', 'upstream_network', 'upstream_rejected', 'internal'];
+          const category = categories.includes(parsed.category || '') ? parsed.category : 'internal';
+          console.warn(`Runner operation failed: ${category}`);
+          finish(new Error(parsed.error || '执行失败'));
+        }
         else finish(undefined, parsed.value);
       } catch { finish(new Error('执行响应无效')); }
     });

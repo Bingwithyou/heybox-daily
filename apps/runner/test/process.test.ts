@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import { runChild } from '../src/process.ts';
 import { createRunnerServer } from '../src/server.ts';
 import { ChallengeStore } from '../src/challenges.ts';
+import { failureCategory } from '../src/worker.ts';
+
+test('failure diagnostics identify the stage without exposing exception text or credentials', () => {
+  assert.equal(failureCategory(new Error('未能从官网获取设备令牌')), 'device_token');
+  assert.equal(failureCategory(new Error('请求过于频繁，请稍后再试')), 'upstream_rate_limit');
+  assert.equal(failureCategory(new Error('HTTP 403：/account/get_login_code/')), 'upstream_http');
+  assert.equal(failureCategory(new Error('private-phone-and-secret')), 'internal');
+});
 
 test('child execution has a hard timeout and does not echo credentials on failure', async () => {
   await assert.rejects(runChild({ action: 'unknown', secret: 'private-fixture' }, 1), /执行超时/);
