@@ -6,7 +6,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { authRequest } from "../lib/client";
 import { readableError } from "../lib/utils";
-import { useAccount } from "../components/layout";
+import { useAccount, type Account } from "../components/layout";
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "登录 · Heybox Daily" }] }),
@@ -60,11 +60,11 @@ function Login() {
     }
     setBusy("verify");
     try {
-      const result = await authRequest<{ account: string }>("heybox/verify-code", {
+      const result = await authRequest<Account>("heybox/verify-code", {
         challenge: challenge.challenge,
         code,
       });
-      setAccount(result.account);
+      setAccount(result);
       await navigate({ to: "/" });
     } catch (e) {
       setError(readableError(e));
@@ -73,12 +73,12 @@ function Login() {
     }
   }
   return (
-    <section className="mx-auto w-full max-w-[440px] px-6 pt-20 pb-16 sm:pt-28">
-      <h1 className="text-3xl font-semibold tracking-tight">登录</h1>
-      <p className="mt-3 text-sm text-muted-foreground">使用小黑盒账号开启每日任务</p>
+    <section className="mx-auto w-full max-w-[528px] px-6 pt-16 pb-16 sm:pt-24">
+      <h1 className="text-center text-4xl font-semibold tracking-tight">登录</h1>
+      <p className="mt-4 text-center text-base text-muted-foreground">使用小黑盒账号开启每日任务</p>
       <form className="mt-10 space-y-6" onSubmit={login}>
         <div>
-          <label htmlFor="phone" className="mb-2.5 block text-sm font-medium">
+          <label htmlFor="phone" className="mb-2.5 block text-base font-medium">
             手机号
           </label>
           <Input
@@ -96,11 +96,11 @@ function Login() {
               setChallenge(null);
               setSentTo("");
             }}
-            className="h-11 rounded-md px-3"
+            className="h-12 rounded-md px-3"
           />
         </div>
         <div>
-          <label htmlFor="code" className="mb-2.5 block text-sm font-medium">
+          <label htmlFor="code" className="mb-2.5 block text-base font-medium">
             验证码
           </label>
           <div className="flex gap-3">
@@ -114,12 +114,12 @@ function Login() {
               value={code}
               onChange={(event) => setCode(event.target.value.replace(/\D/g, ""))}
               disabled={busy === "verify"}
-              className="h-11 rounded-md px-3"
+              className="h-12 rounded-md px-3"
             />
             <Button
               type="button"
               variant="outline"
-              className="h-11 min-w-28 rounded-md px-4"
+              className="h-12 min-w-28 rounded-md px-4 text-base"
               disabled={busy !== null || cooldown > 0}
               onClick={send}
             >
@@ -127,7 +127,7 @@ function Login() {
             </Button>
           </div>
           {sentTo && (
-            <p role="status" className="mt-2 text-xs text-muted-foreground">
+            <p role="status" className="mt-2 text-sm text-muted-foreground">
               验证码已发送至尾号 {sentTo}
             </p>
           )}
@@ -139,13 +139,13 @@ function Login() {
         )}
         <Button
           type="submit"
-          className="h-11 w-full rounded-md"
+          className="h-12 w-full rounded-md text-base"
           disabled={busy !== null || !challenge || !code}
         >
           {busy === "verify" ? "正在验证…" : "登录并开启自动任务"}
         </Button>
       </form>
-      <div className="mt-6 space-y-2 text-xs leading-6 text-muted-foreground">
+      <div className="mt-6 space-y-2 text-center text-sm leading-6 text-muted-foreground">
         <p>我们会加密保存登录态，用于每日签到和任务。</p>
         <p>登录可能导致手机 APP 退出，登录态失效后需重新验证。</p>
       </div>

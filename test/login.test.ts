@@ -6,7 +6,7 @@ import path from 'node:path';
 import { constants, generateKeyPairSync, privateDecrypt } from 'node:crypto';
 import { HeyboxApiError, HeyboxClient } from '../dist/client.js';
 import { saveConfig } from '../dist/config.js';
-import { createLoginConfig, encryptPhone, normalizePhone, runSmsLogin } from '../dist/login.js';
+import { createLoginConfig, encryptPhone, normalizePhone, runSmsLogin, verifyLoginCode } from '../dist/login.js';
 import type { Config, Query } from '../dist/types.js';
 
 type LoginOptions = Parameters<typeof runSmsLogin>[0];
@@ -118,6 +118,18 @@ test('verification failure cannot replace an existing configuration', async () =
     await assert.rejects(runSmsLogin(f.options), /readback failed/);
     assert.equal(readFileSync(f.file, 'utf8'), 'existing configuration');
   } finally { f.cleanup(); }
+});
+
+test('login verifies the account and profile without querying sign-in state', async () => {
+  let signReads = 0;
+  const authenticated = await verifyLoginCode(createLoginConfig(token), '13800138000', '1234', {
+    clientFactory: () => clientWith(async () => loginResult, {
+      tasks: async () => ({ ...taskResult, user: { ...taskResult.user, username: '测试盒友', avatar: 'https://cdn.max-c.com/avatar/test.png' } }),
+      signState: async () => { signReads++; return {}; },
+    }),
+  });
+  assert.equal(signReads, 0, 'sign-in state is irrelevant to credential validation');
+  assert.deepEqual(authenticated.profile, { nickname: '测试盒友', avatar: 'https://cdn.max-c.com/avatar/test.png' });
 });
 
 test('a rejected code can be corrected in the same session without another SMS', async () => {

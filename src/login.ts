@@ -2,9 +2,9 @@ import { constants, publicEncrypt, randomUUID } from 'node:crypto';
 import { HeyboxApiError, HeyboxClient } from './client.js';
 import { saveConfig, validateConfig } from './config.js';
 import { getDeviceToken } from './device-token.js';
-import { nativeSignature } from './native.js';
 import { androidBase64 } from './report.js';
-import { inspect } from './tasks.js';
+import { snapshot } from './tasks.js';
+import { accountProfile } from './profile.js';
 import type { Config } from './types.js';
 
 // Public login encryption key returned by the verified APP's NDKTools.getrsakey.
@@ -16,7 +16,7 @@ lOXm4UxLeSxQwSFETwIDAQAB
 -----END PUBLIC KEY-----`;
 
 interface LoginResult {
-  profile?: { heybox_id?: string | number };
+  profile?: { heybox_id?: string | number; nickname?: string; avatar?: string };
   account_detail?: { userid?: string | number };
   pkey?: string;
 }
@@ -53,7 +53,9 @@ export function createLoginConfig(token: string): Config {
 
 export async function prepareLogin(options: LoginDependencies = {}) {
   const config = createLoginConfig('');
-  (options.preflight || (value => nativeSignature('/account/get_login_code/', value)))(config);
+  // Sending the code signs locally before making its HTTP request. Do not start
+  // another native process here just to repeat that same check.
+  options.preflight?.(config);
   const token = await (options.getDeviceToken || getDeviceToken)();
   if (!/^B[A-Za-z0-9+/=_-]{88}$/.test(token)) throw new Error('官网返回的设备令牌格式异常');
   config.session.x_xhh_tokenid = token;
@@ -75,7 +77,8 @@ export async function verifyLoginCode(config: Config, phone: string, code: strin
     throw new Error('登录响应中的账号或凭据无效，原配置已保留');
   }
   const authenticated = validateConfig({ ...config, session: { ...config.session, heybox_id: account, pkey: result.pkey } });
-  await inspect(factory(authenticated), account);
+  const current = snapshot(await factory(authenticated).tasks(), account);
+  authenticated.profile = current.profile || accountProfile(result.profile);
   return authenticated;
 }
 

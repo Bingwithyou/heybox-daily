@@ -97,7 +97,11 @@ export function createAuth(env: Env) {
             path: "/",
             maxAge: 0,
           });
-          return ctx.json({ account: credential.account });
+          return ctx.json({
+            account: credential.account,
+            nickname: user.name,
+            avatar: user.image || null,
+          });
         },
       ),
     },

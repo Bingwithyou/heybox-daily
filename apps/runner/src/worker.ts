@@ -26,7 +26,8 @@ async function daily(job: Job): Promise<Outcome> {
     const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: () => checkpoint(job),
       onSnapshot: value => { before ||= value; latest = value; } });
     await checkpoint(job);
-    return { status: 'completed', ...result, snapshot: publicSnapshot(await inspect(client, config.session.heybox_id)) };
+    return { status: 'completed', expDelta: result.expDelta, coinDelta: result.coinDelta,
+      profile: result.snapshot.profile, snapshot: publicSnapshot(result.snapshot) };
   } catch (error) {
     const text = error instanceof Error ? error.message : '';
     if (text === 'cancelled' || text === 'cross_day') return { status: 'cancelled', reason: text };

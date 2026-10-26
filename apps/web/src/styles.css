@@ -28,8 +28,10 @@
   --muted-foreground: #71717a;
   --border: #e4e4e7;
 }
-* {
-  border-color: var(--border);
+@layer base {
+  * {
+    border-color: var(--border);
+  }
 }
 body {
   margin: 0;

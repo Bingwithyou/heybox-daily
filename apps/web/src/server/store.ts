@@ -44,12 +44,16 @@ export class Store {
     const now = this.now();
     await this.db.batch([
       this.sql(
-        "INSERT INTO user(id,name,email,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+        `INSERT INTO user(id,name,email,image,created_at,updated_at) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET name=COALESCE(?,user.name),image=COALESCE(?,user.image),updated_at=excluded.updated_at`,
         id,
-        `盒友 ${credential.account}`,
+        credential.profile?.nickname || `盒友 ${credential.account}`,
         `${credential.account}@heybox.invalid`,
+        credential.profile?.avatar || null,
         now,
         now,
+        credential.profile?.nickname || null,
+        credential.profile?.avatar || null,
       ),
       this.sql(
         `INSERT INTO hosting(user_id,heybox_id,ciphertext,version,enabled,credential_state,updated_at) VALUES(?,?,?,?,1,'valid',?)
@@ -103,7 +107,7 @@ export class Store {
     const now = this.now();
     const date = beijingDate(now);
     await this.recover();
-    if (now >= Date.parse(`${date}T09:15:00+08:00`)) {
+    if (now >= Date.parse(`${date}T00:01:00+08:00`)) {
       await this.sql(
         `INSERT OR IGNORE INTO jobs(id,user_id,date,status,available_at,created_at,updated_at)
         SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),
@@ -235,6 +239,21 @@ export class Store {
         version,
         now,
       ),
+      ...(outcome.profile
+        ? [
+            this.sql(
+              `UPDATE user SET name=COALESCE(?,name),image=COALESCE(?,image),updated_at=? WHERE id=(
+          SELECT user_id FROM jobs WHERE id=? AND lease=? AND version=? AND status='completed' AND updated_at=?)`,
+              outcome.profile.nickname || null,
+              outcome.profile.avatar || null,
+              now,
+              id,
+              lease,
+              version,
+              now,
+            ),
+          ]
+        : []),
     ]);
     return !!(await this.sql(
       "SELECT id FROM jobs WHERE id=? AND lease=? AND version=? AND updated_at=? AND status<>'running'",
@@ -269,17 +288,25 @@ export class Store {
     await this.sql("DELETE FROM user WHERE id=?", userId).run();
   }
   async dashboard(userId: string) {
-    const settings = await this.sql(
-      "SELECT heybox_id AS account,enabled,credential_state AS credentialState FROM hosting WHERE user_id=?",
-      userId,
-    ).first<{ account: string; enabled: number; credentialState: string }>();
-    if (!settings) return null;
-    const history = (
-      await this.sql(
+    const [settings, rows] = await Promise.all([
+      this.sql(
+        `SELECT h.heybox_id AS account,h.enabled,h.credential_state AS credentialState,u.name AS nickname,u.image AS avatar
+        FROM hosting h JOIN user u ON u.id=h.user_id WHERE h.user_id=?`,
+        userId,
+      ).first<{
+        account: string;
+        enabled: number;
+        credentialState: string;
+        nickname: string;
+        avatar: string | null;
+      }>(),
+      this.sql(
         "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? ORDER BY date DESC LIMIT 15",
         userId,
-      ).all<JobRow>()
-    ).results.map((row) => ({
+      ).all<JobRow>(),
+    ]);
+    if (!settings) return null;
+    const history = rows.results.map((row) => ({
       id: row.id,
       date: row.date,
       status: row.status,
@@ -289,6 +316,8 @@ export class Store {
     }));
     return {
       account: settings.account,
+      nickname: settings.nickname,
+      avatar: settings.avatar,
       enabled: !!settings.enabled,
       credentialState: settings.credentialState,
       nextRunAt: settings.enabled ? nextRunAt(this.now()) : null,

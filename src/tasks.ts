@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { shareEvent } from './report.js';
+import { accountProfile } from './profile.js';
 import type { FeedResult, Inspection, ReviewShareResult, ShareContent, ShareId, SignState, TaskClient, TaskListResult, TaskSnapshot } from './types.js';
 
 const shareIds: ShareId[] = ['1', '19', '31'];
@@ -18,7 +19,7 @@ export function snapshot(result: TaskListResult | undefined, account: string): T
   }
   const level = result!.user!.level_info;
   if (!Number.isFinite(Number(level?.exp)) || !Number.isFinite(Number(level?.coin))) throw new Error('任务列表缺少经验或 H 币数据');
-  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin) };
+  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin), profile: accountProfile(result!.user) };
 }
 
 export function signedToday(state: SignState | undefined, time = Date.now()) {
@@ -108,5 +109,5 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
   if (!after.signed || shareIds.some(id => after.tasks.find(task => task.id === id)!.state !== 'finish')) {
     throw new Error('最终状态未通过检查，可能跨日或任务状态已变化');
   }
-  return { completed: true, expDelta: after.exp - before.exp, coinDelta: after.coin - before.coin };
+  return { completed: true, expDelta: after.exp - before.exp, coinDelta: after.coin - before.coin, snapshot: after };
 }

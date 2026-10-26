@@ -108,6 +108,8 @@ await login(
 const first = await a.rpc.dashboard();
 const second = await b.rpc.dashboard();
 assert.notEqual(first.account, second.account);
+assert.equal(first.nickname, "测试盒友");
+assert.equal(first.avatar, null);
 assert.ok(first.enabled && second.enabled);
 assert.ok(!JSON.stringify(first).includes("ciphertext"));
 assert.ok(!JSON.stringify(first).includes("pkey"));

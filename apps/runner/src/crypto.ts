@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import type { Credential } from '@heybox/contracts';
 import type { Config } from 'heybox-daily/types';
 import { validateConfig } from 'heybox-daily/config';
+import { accountProfile } from 'heybox-daily/profile';
 
 function keyBytes(key: string) {
   const bytes = Buffer.from(key, 'base64');
@@ -15,7 +16,7 @@ export function encryptCredential(config: Config, key: string): Credential {
   const cipher = createCipheriv('aes-256-gcm', keyBytes(key), iv);
   cipher.setAAD(Buffer.from(`${account}:${version}`));
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(config), 'utf8'), cipher.final()]);
-  return { account, version, ciphertext: Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64') };
+  return { account, version, ciphertext: Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64'), profile: accountProfile(config.profile) };
 }
 export function decryptCredential(credential: Credential, key: string): Config {
   const bytes = Buffer.from(credential.ciphertext, 'base64');

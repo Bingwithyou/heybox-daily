@@ -15,6 +15,7 @@ export function createMockRunner(token: string, key: string) {
       },
       device: { model: "test", osVersion: "17" },
       app: { version: "1.3.398", build: "1142", shaderVersion: "14" },
+      profile: { nickname: "测试盒友" },
     }),
     verify: async (config: Config, _phone, code) => {
       if (code !== "123456") throw new Error("wrong");

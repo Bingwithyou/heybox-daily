@@ -5,6 +5,7 @@ import { Store } from "./server/store.ts";
 
 export default {
   async fetch(request: Request, env: Env) {
+    const started = performance.now();
     let response: Response;
     try {
       response = (await api(request, env)) || (await start.fetch(request));
@@ -17,6 +18,7 @@ export default {
     result.headers.set("x-frame-options", "DENY");
     result.headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
     result.headers.set("cache-control", "no-store");
+    result.headers.set("server-timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
     return result;
   },
   async scheduled(_event: ScheduledController, env: Env, context: ExecutionContext) {

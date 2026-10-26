@@ -2,7 +2,10 @@ export interface Config {
   session: { heybox_id: string; pkey: string; device_id: string; x_xhh_tokenid: string };
   device: { model: string; osVersion: string };
   app: { version: string; build: string; shaderVersion: string };
+  profile?: AccountProfile;
 }
+
+export interface AccountProfile { nickname?: string; avatar?: string }
 
 export interface WebSignature { hkey: string; _time: string; nonce: string }
 export interface NativeSignature extends WebSignature { _rnd: string }
@@ -22,13 +25,14 @@ export interface ShareEvent {
 
 // API fields stay optional where the existing runtime checks handle missing data.
 export interface TaskListResult {
-  user?: { userid?: string | number; level_info?: { exp?: string | number; coin?: string | number } };
+  user?: { userid?: string | number; username?: string; avatar?: string; level_info?: { exp?: string | number; coin?: string | number } };
   task_list?: Array<{ title?: string; tasks?: Array<{ title?: string; state?: string; report_extra?: { task_id?: string | number } }> }>;
 }
 export interface TaskSnapshot {
   tasks: Array<{ id: string; title?: string; state?: string }>;
   exp: number;
   coin: number;
+  profile?: AccountProfile;
 }
 export interface SignState { state?: string; signed_date?: string | number }
 export interface Inspection extends TaskSnapshot { signed: boolean }

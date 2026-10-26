@@ -46,7 +46,7 @@ function fixture() {
       }
     },
   };
-  let now = Date.parse("2026-10-27T09:15:00+08:00");
+  let now = Date.parse("2026-10-27T00:01:00+08:00");
   return {
     db,
     store: new Store(adapter, () => now),
@@ -258,8 +258,71 @@ test("retries preserve rewards already confirmed by a partially completed attemp
     f.close();
   }
 });
-test("the daily schedule uses Beijing midnight and 09:15 across UTC dates", () => {
+test("the daily schedule uses Beijing 00:01 across UTC dates", () => {
   assert.equal(beijingDate(Date.parse("2026-10-26T16:01:00Z")), "2026-10-27");
-  assert.equal(nextRunAt(Date.parse("2026-10-27T01:14:00Z")), Date.parse("2026-10-27T01:15:00Z"));
-  assert.equal(nextRunAt(Date.parse("2026-10-27T01:16:00Z")), Date.parse("2026-10-28T01:15:00Z"));
+  assert.equal(nextRunAt(Date.parse("2026-10-26T16:00:00Z")), Date.parse("2026-10-26T16:01:00Z"));
+  assert.equal(nextRunAt(Date.parse("2026-10-26T16:01:00Z")), Date.parse("2026-10-27T16:01:00Z"));
+});
+
+test("a new day is enqueued at 00:01 and never at 00:00", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    f.advance(86400_000 - 60_000);
+    await f.store.schedule();
+    assert.equal((await f.store.dashboard(id))?.today, null);
+    f.advance(60_000);
+    await f.store.schedule();
+    assert.equal((await f.store.dashboard(id))?.today?.status, "queued");
+    await f.store.schedule();
+    assert.equal((await f.store.dashboard(id))?.history.length, 2);
+  } finally {
+    f.close();
+  }
+});
+
+test("profile updates stay with their account and survive legacy credentials", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll({
+      ...credential("123"),
+      profile: { nickname: "测试盒友", avatar: "https://cdn.max-c.com/avatar/test.png" },
+    });
+    await f.store.enroll(credential("456"));
+    assert.equal((await f.store.dashboard(id))?.nickname, "测试盒友");
+    assert.equal((await f.store.dashboard(id))?.avatar, "https://cdn.max-c.com/avatar/test.png");
+    await f.store.enroll(credential("123"));
+    assert.equal((await f.store.dashboard(id))?.nickname, "测试盒友");
+    assert.equal((await f.store.dashboard("heybox:456"))?.nickname, "盒友 456");
+  } finally {
+    f.close();
+  }
+});
+
+test("only an accepted task result can refresh its account profile", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll({ ...credential("123"), profile: { nickname: "原昵称" } });
+    const old = (await f.store.claim())!;
+    await f.store.enroll({ ...credential("123"), profile: { nickname: "重新登录后的昵称" } });
+    assert.equal(
+      await f.store.finish(old.id, old.lease, old.credential.version, {
+        status: "completed",
+        profile: { nickname: "过期进程" },
+      }),
+      false,
+    );
+    assert.equal((await f.store.dashboard(id))?.nickname, "重新登录后的昵称");
+    const current = (await f.store.claim())!;
+    assert.equal(
+      await f.store.finish(current.id, current.lease, current.credential.version, {
+        status: "completed",
+        profile: { nickname: "当前昵称", avatar: "https://cdn.max-c.com/current.png" },
+      }),
+      true,
+    );
+    assert.equal((await f.store.dashboard(id))?.nickname, "当前昵称");
+  } finally {
+    f.close();
+  }
 });

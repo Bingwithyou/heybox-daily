@@ -28,6 +28,10 @@ const configPath = path.join(directory, "wrangler.json");
 const config = JSON.parse(await readFile(path.join(web, "dist/server/wrangler.json"), "utf8"));
 delete config.configPath;
 delete config.userConfigPath;
+// Wrangler rewrites Origin to a configured custom domain even in local mode.
+// Keep the isolated test server on its own loopback origin.
+config.routes = [];
+delete config.account_id;
 config.main = path.join(web, "dist/server/index.js");
 config.assets.directory = path.join(web, "dist/client");
 config.vars = {

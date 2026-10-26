@@ -31,7 +31,7 @@ pnpm --filter @heybox/web test:integration
 
 ## 生产资源
 
-默认部署方案：
+当前实例已于 2026-10-27 部署到 [heybox.cansiny.top](https://heybox.cansiny.top)。资源如下：
 
 | 资源 | 用途 |
 | --- | --- |
@@ -45,6 +45,8 @@ pnpm --filter @heybox/web test:integration
 Tunnel 从 VPS 主动连接 Cloudflare，容器之间使用项目独立网络，无需接管 VPS 的 80 或 443 端口。执行端仍要求服务令牌；浏览器不能直接调用。已有 HTTPS 反向代理也可以使用，`RUNNER_URL` 必须指向经过校验的 HTTPS 服务。
 
 以下步骤会创建资源和发布服务，请在部署授权后执行。Cloudflare 账号需具备 Workers、D1、Tunnel 和对应域名 DNS 的管理权限。
+
+仓库中的 `wrangler.jsonc` 已绑定当前实例。维护该实例时复用现有资源；自行部署时，将 `account_id`、D1 的 `database_id`、域名和服务地址替换为自己的配置。不要重复创建同名资源或沿用他人的资源 ID。
 
 ### 1. 准备 Cloudflare
 
@@ -69,7 +71,7 @@ pnpm --filter @heybox/web exec wrangler tunnel create heybox-daily-runner
 "routes": [{ "pattern": "heybox.cansiny.top", "custom_domain": true }]
 ```
 
-在 Cloudflare Tunnel 中配置公开主机名 `heybox-runner.cansiny.top`，服务指向 `http://runner:8788`。保存其连接令牌，供下一步使用。这里的 `runner` 是同一 Compose 项目中的服务名。
+在 Cloudflare Tunnel 中配置公开主机名 `heybox-runner.cansiny.top`，服务指向 `http://runner:8788`。为该主机名添加开启代理的 CNAME，目标为 `<Tunnel UUID>.cfargotunnel.com`；若控制台已自动创建，直接检查现有记录。保存其连接令牌，供下一步使用。这里的 `runner` 是同一 Compose 项目中的服务名。
 
 ### 2. 配置 VPS
 
@@ -99,19 +101,21 @@ runner 只监听主机回环地址；cloudflared 不开放额外入站端口。�
 
 `BETTER_AUTH_SECRET` 单独用 `openssl rand -hex 32` 生成。通过交互输入设置密钥，避免把值写进命令行历史：
 
+发布构建前移走本地 `.dev.vars`，确认 `dist/server/` 不带本地测试密钥；生产密钥使用 Wrangler Secret 保存。下面使用 `run deploy`，避免调用 pnpm 自带的 workspace `deploy` 命令。
+
 ```bash
 pnpm --filter @heybox/web exec wrangler secret put BETTER_AUTH_SECRET
 pnpm --filter @heybox/web exec wrangler secret put RUNNER_SERVICE_TOKEN
 pnpm --filter @heybox/web exec wrangler d1 migrations apply heybox-daily --remote
 pnpm --filter @heybox/web build
-pnpm --filter @heybox/web deploy
+pnpm --filter @heybox/web run deploy
 ```
 
 正式验收需检查 HTTPS、验证码登录、网站会话和一条真实账号任务。短信发送和真实账号登录需要账号持有者授权。仅有本地模拟测试或离线签名通过，不能视为线上登录成功。
 
 ## 运行行为
 
-首次登录会排队补跑当天任务。定时触发器每 5 分钟检查一次，北京时间 09:15 起将启用的账号加入当天队列，同一账号每天只有一条记录。执行前检查小黑盒真实状态，已完成的任务会跳过。
+首次登录会排队补跑当天任务。定时触发器每 5 分钟检查一次，北京时间 00:01 起将启用的账号加入当天队列，同一账号每天只有一条记录。执行前检查小黑盒真实状态，已完成的任务会跳过。
 
 短暂失败最多自动尝试 3 次，并延迟重试。登录失效会暂停，不会自动发送短信。重新登录会更新凭据版本；旧进程停止或租约到期前，新任务等待，不会接受旧凭据的任务结果。
 

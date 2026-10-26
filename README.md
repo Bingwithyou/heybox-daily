@@ -40,6 +40,8 @@ docker compose run --rm heybox run
 
 ## 在线托管网站
 
+访问 [heybox.cansiny.top](https://heybox.cansiny.top)，登录后即可开启每日自动任务。
+
 网站支持小黑盒短信登录、每日自动执行、查看任务、暂停、补跑和删除托管数据。前端与 API 使用 Cloudflare Workers + D1，VPS 负责登录和脚本执行。
 
 开发、部署和数据备份见 [网站部署说明](docs/hosting.md)。CLI 的使用方式保持不变。
