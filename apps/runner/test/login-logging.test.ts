@@ -8,6 +8,16 @@ const config = { session: { heybox_id: '-1', pkey: 'private-pkey', device_id: 'p
   device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
 const proof = { ticket: 'private-ticket', randstr: 'private-randstr' };
 
+test('Workers login logs identify the transport without reporting the VPS address as upstream egress', () => {
+  const log = createLoginLog({ action: 'send', phone: '13800138000', config, proof }, {
+    RUNNER_SERVICE_TOKEN: key, RUNNER_EGRESS_IP: '203.0.113.8',
+    LOGIN_RELAY_URL: 'https://relay.example', LOGIN_RELAY_TOKEN: 'relay-private-fixture-'.repeat(3),
+  })!({ status: 'sent', config });
+  assert.equal(log.transport, 'cloudflare_worker'); assert.equal(log.egressIp, undefined);
+  assert.equal(log.egressSource, 'cloudflare_worker');
+  assert.ok(!JSON.stringify(log).includes('relay-private'));
+});
+
 function environment(values: Record<string, string | undefined>) {
   const previous = Object.fromEntries(Object.keys(values).map(name => [name, process.env[name]]));
   const apply = (items: typeof values) => { for (const [name, value] of Object.entries(items)) {

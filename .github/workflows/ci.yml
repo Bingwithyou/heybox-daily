@@ -13,6 +13,9 @@ jobs:
       - run: npm install --global pnpm@12.15.0
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm test
+      - run: pnpm --filter @heybox/login-relay typecheck
+      - run: pnpm --filter @heybox/login-relay test
+      - run: pnpm --filter @heybox/login-relay test:runtime
       - run: pnpm --filter @heybox/runner typecheck
       - run: pnpm --filter @heybox/runner test
       - run: pnpm --filter @heybox/web test
@@ -36,4 +39,5 @@ jobs:
         run: >-
           docker run --rm --network none --read-only --tmpfs /tmp:exec,size=512m
           --entrypoint node -v "$PWD/apps/runner/test:/app/apps/runner/test:ro"
+          -v "$PWD/apps/login-relay/src:/app/apps/login-relay/src:ro"
           heybox-daily-runner:ci --test apps/runner/test/*.test.ts

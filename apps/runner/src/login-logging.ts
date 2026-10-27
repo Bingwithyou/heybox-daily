@@ -21,11 +21,13 @@ export function createLoginLog(input: unknown, env: NodeJS.ProcessEnv = process.
   let phone: string | undefined;
   try { if (typeof data.phone === 'string') phone = normalizePhone(data.phone); } catch { /* invalid input has no identity */ }
   const configuredIp = env.RUNNER_EGRESS_IP?.trim() || '';
+  const relayed = !!env.LOGIN_RELAY_URL;
   const family = configuredIp.includes('%') ? 0 : isIP(configuredIp);
-  const egressIp = family === 6 ? new URL(`http://[${configuredIp}]`).hostname.slice(1, -1) : family === 4 ? configuredIp : undefined;
+  const egressIp = relayed ? undefined : family === 6 ? new URL(`http://[${configuredIp}]`).hostname.slice(1, -1) : family === 4 ? configuredIp : undefined;
   const started = performance.now();
   const base = { operationId: randomUUID(), startedAt: new Date().toISOString(), phoneRef: reference('phone', phone),
-    egressIp, egressSource: egressIp ? 'configured' : 'unknown', hasCaptchaProof: !!record(data.proof) };
+    transport: relayed ? 'cloudflare_worker' : 'direct',
+    egressIp, egressSource: relayed ? 'cloudflare_worker' : egressIp ? 'configured' : 'unknown', hasCaptchaProof: !!record(data.proof) };
   return (result?: unknown) => {
     const status = record(result)?.status;
     return { ...base, durationMs: Math.max(0, Math.round(performance.now() - started)),

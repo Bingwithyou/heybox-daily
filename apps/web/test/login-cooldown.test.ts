@@ -4,12 +4,51 @@ import {
   emptyCooldownState,
   startSmsRequest,
   applySmsCooldown,
+  applySentCooldown,
   activeCooldown,
   restoreCooldown,
   formatCooldown,
 } from "../src/lib/login-cooldown.ts";
 
 const phone = "+8613900000004";
+
+test("a CAPTCHA-delayed SMS starts a fresh cooldown after the initial request has expired", () => {
+  const initial = startSmsRequest(emptyCooldownState(), phone, 100_000);
+  assert.equal(activeCooldown(initial, phone, 175_000), null);
+  const sent = applySentCooldown(initial, phone, 60, 175_000);
+  assert.equal(activeCooldown(sent, phone, 175_000)?.seconds, 60);
+  assert.equal(activeCooldown(sent, phone, 175_000)?.rule, "sms:phone:minute");
+  assert.equal(
+    activeCooldown(restoreCooldown(JSON.stringify(sent), 185_000), phone, 185_000)?.seconds,
+    50,
+  );
+  assert.equal(activeCooldown(sent, phone, 235_000), null);
+});
+
+test("normal SMS sends are disabled for the returned retry period and longer quotas survive", () => {
+  const normal = applySentCooldown(emptyCooldownState(), phone, 60, 100_000);
+  assert.equal(activeCooldown(normal, phone, 100_000)?.seconds, 60);
+  assert.equal(activeCooldown(normal, "+8613900000005", 100_000), null);
+  const limited = applySmsCooldown(
+    normal,
+    phone,
+    {
+      serverTime: 100_000,
+      limits: [{ rule: "sms:phone:day", retryAt: 3_700_000 }],
+    },
+    100_000,
+  );
+  const sent = applySentCooldown(limited, phone, 60, 120_000);
+  assert.equal(activeCooldown(sent, phone, 120_000)?.rule, "sms:phone:day");
+  assert.equal(activeCooldown(sent, phone, 120_000)?.seconds, 3580);
+});
+
+test("a rejected verification returning sent with retryAfter zero does not restart the SMS timer", () => {
+  const sent = applySentCooldown(emptyCooldownState(), phone, 60, 100_000);
+  const retry = applySentCooldown(sent, phone, 0, 130_000);
+  assert.equal(activeCooldown(retry, phone, 130_000)?.seconds, 30);
+  assert.equal(activeCooldown(retry, phone, 160_000), null);
+});
 
 test("an unresolved or failed send keeps its cooldown across refresh", () => {
   const state = startSmsRequest(emptyCooldownState(), phone, 100_000);

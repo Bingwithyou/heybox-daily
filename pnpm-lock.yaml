@@ -190,6 +190,12 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  apps/login-relay:
+    devDependencies:
+      wrangler:
+        specifier: 4.153.0
+        version: 4.153.0(@cloudflare/workers-types@5.20261026.1)(@types/node@24.19.2)
+
   apps/runner:
     dependencies:
       '@heybox/contracts':

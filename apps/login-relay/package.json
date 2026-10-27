@@ -1,0 +1,12 @@
+{
+  "name": "@heybox/login-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "test:runtime": "node test/runtime.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": { "wrangler": "4.153.0" }
+}

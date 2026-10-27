@@ -3,12 +3,14 @@ import { ChallengeStore, type LoginStep } from './challenges.ts';
 import { createRunnerServer } from './server.ts';
 import { runChild } from './process.ts';
 import { TaskQueue } from './queue.ts';
+import { loginRelayConfig } from './login-relay.ts';
 
 const token = process.env.RUNNER_SERVICE_TOKEN || '';
 const key = process.env.CREDENTIAL_KEY || '';
 const website = process.env.WEBSITE_URL || '';
 if (token.length < 32 || Buffer.from(key, 'base64').length !== 32 || !/^https?:\/\//.test(website)) throw new Error('请配置 RUNNER_SERVICE_TOKEN、CREDENTIAL_KEY 和 WEBSITE_URL');
 if (!website.startsWith('https://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/)/.test(website)) throw new Error('WEBSITE_URL 必须使用 HTTPS');
+loginRelayConfig();
 const store = new ChallengeStore({ begin: phone => runChild<LoginStep>({ action: 'begin', phone }, 120_000),
   send: (config, phone, proof) => runChild<LoginStep>({ action: 'send', config, phone, proof }, 120_000),
   verify: (config, phone, code, proof) => runChild<LoginStep>({ action: 'verify', config, phone, code, proof }, 120_000) });

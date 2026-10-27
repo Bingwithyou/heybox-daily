@@ -11,6 +11,7 @@ import { privatePageHead } from "../lib/seo";
 import {
   activeCooldown,
   applySmsCooldown,
+  applySentCooldown,
   cooldownStorageKey,
   emptyCooldownState,
   formatCooldown,
@@ -96,6 +97,9 @@ function Login() {
     }
     setChallenge(result);
     if (result.status === "sent") {
+      saveCooldown(
+        applySentCooldown(cooldownRef.current, phoneSchema.parse(phone), result.retryAfter),
+      );
       setSentTo(phone.slice(-4));
       if (result.message) setError(result.message);
     }

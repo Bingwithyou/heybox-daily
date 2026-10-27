@@ -94,6 +94,31 @@ export function applySmsCooldown(
   return { phone, entries };
 }
 
+export function applySentCooldown(
+  state: CooldownState,
+  phone: string,
+  retryAfter: number,
+  now = Date.now(),
+): CooldownState {
+  // A verification retry may return to code entry without sending another SMS.
+  if (retryAfter <= 0) return state;
+  const previous = state.entries.filter(
+    (entry) => entry.phone === phone && entry.rule === "sms:phone:minute",
+  );
+  const until = Math.max(now + retryAfter * 1000, ...previous.map((entry) => entry.until));
+  return {
+    phone,
+    entries: [
+      ...state.entries.filter(
+        (entry) =>
+          entry.until > now &&
+          !(entry.phone === phone && ["pending", "sms:phone:minute"].includes(entry.rule)),
+      ),
+      { phone, rule: "sms:phone:minute", until },
+    ],
+  };
+}
+
 export function activeCooldown(state: CooldownState, phone: string, now = Date.now()) {
   const entry = state.entries
     .filter((item) => item.until > now && (item.phone === undefined || item.phone === phone))
