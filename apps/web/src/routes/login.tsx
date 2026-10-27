@@ -7,6 +7,7 @@ import { authRequest } from "../lib/client";
 import { readableError } from "../lib/utils";
 import { useAccount, type Account } from "../components/layout";
 import { showCaptcha } from "../lib/captcha";
+import { privatePageHead } from "../lib/seo";
 import {
   activeCooldown,
   applySmsCooldown,
@@ -22,7 +23,7 @@ import {
 type LoginResult = LoginProgress | (Account & { status: "authenticated" });
 
 export const Route = createFileRoute("/login")({
-  head: () => ({ meta: [{ title: "登录 · Heybox Daily" }] }),
+  head: () => privatePageHead("登录 · Heybox Daily"),
   validateSearch: (search: Record<string, unknown>): { account?: string } => ({
     account:
       typeof search.account === "string" && /^\d{1,64}$/.test(search.account)
@@ -90,7 +91,7 @@ function Login() {
       saveCooldown(emptyCooldownState());
       setAccount(result);
       await refreshAccounts();
-      await navigate({ to: "/" });
+      await navigate({ to: "/tasks" });
       return;
     }
     setChallenge(result);

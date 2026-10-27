@@ -2,17 +2,25 @@ import start from "@tanstack/react-start/server-entry";
 import type { Env } from "./server/env.ts";
 import { api } from "./server/api.ts";
 import { runScheduled } from "./server/schedule.ts";
+import { crawlerDocument, shouldNoindex } from "./server/seo.ts";
+import { pageAccess } from "./server/page-access.ts";
 
 export default {
   async fetch(request: Request, env: Env) {
     const started = performance.now();
     let response: Response;
     try {
-      response = (await api(request, env)) || (await start.fetch(request));
+      response =
+        crawlerDocument(request) ||
+        (await pageAccess(request, env)) ||
+        (await api(request, env)) ||
+        (await start.fetch(request));
     } catch {
       response = Response.json({ message: "服务暂时不可用，请稍后重试" }, { status: 503 });
     }
     const result = new Response(response.body, response);
+    if (shouldNoindex(new URL(request.url).pathname, response.status))
+      result.headers.set("x-robots-tag", "noindex, follow");
     result.headers.set("x-content-type-options", "nosniff");
     result.headers.set("referrer-policy", "same-origin");
     result.headers.set("x-frame-options", "DENY");

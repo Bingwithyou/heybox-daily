@@ -23,7 +23,9 @@ pnpm --filter @heybox/web test:integration
 
 集成测试会临时启动本地 Worker、D1 和模拟执行端，验证登录、Cookie、任务领取、暂停和删除。它不发送短信、不访问真实小黑盒账号，也不创建远程资源；结束后清理临时数据库。
 
-只查看界面可以运行 `pnpm --filter @heybox/web dev`，打开 `http://localhost:3000/login` 或 `/sponsor`。需要调试真实 API 时，复制 `apps/web/.dev.vars.example` 为 `.dev.vars`，填入本地密钥，运行 `pnpm --filter @heybox/web db:local`，并配置可用的执行端。未配置时 API 会明确返回服务未就绪。
+只查看界面可以运行 `pnpm --filter @heybox/web dev`，打开 `http://localhost:3000/`、`/about`、`/help`、`/privacy`、`/login` 或 `/sponsor`。默认入口 `/` 在未登录时进入 `/login`，已登录时进入 `/tasks`；访客直接访问 `/tasks` 也会进入登录页。公开介绍位于 `/about`。需要调试真实 API 时，复制 `apps/web/.dev.vars.example` 为 `.dev.vars`，填入本地密钥，运行 `pnpm --filter @heybox/web db:local`，并配置可用的执行端。未配置时 API 会明确返回服务未就绪。
+
+公开页的标题、canonical、分享元数据和介绍页结构化数据由 `apps/web/src/lib/seo.ts` 管理，Worker 提供 `/robots.txt` 和 `/sitemap.xml`。自部署网站到其他域名时，除了修改 `SITE_URL` 和路由，也需更新该文件的 `siteUrl`，避免搜索结果指向原站。sitemap 仅列出公开页面；登录、个人任务和接口不收录，访问控制仍由原有认证实现。发布后需核对实际域名的 robots 和 HTML，确认 CDN 的托管 robots 或爬虫规则没有覆盖应用配置。
 
 格式化只处理网站：`pnpm --filter @heybox/web exec vp fmt`。不需要改动原有 CLI 或 Python 辅助脚本。
 

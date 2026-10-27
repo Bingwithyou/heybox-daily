@@ -10,6 +10,7 @@ export const Route = createRootRoute({
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "Heybox Daily" },
       { name: "description", content: "小黑盒每日签到和每日任务托管" },
+      { name: "robots", content: "noindex, follow" },
     ],
     links: [
       { rel: "stylesheet", href: css },
@@ -26,7 +27,7 @@ export const Route = createRootRoute({
     <div className="mx-auto max-w-5xl px-8 py-24">
       <h1 className="mb-6 text-2xl font-semibold">页面不存在</h1>
       <Link to="/" className="text-sm underline">
-        返回我的任务
+        返回首页
       </Link>
     </div>
   ),

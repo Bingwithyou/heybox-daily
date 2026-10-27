@@ -8,9 +8,12 @@ import { jobSchema, taskIds } from "@heybox/contracts";
 import { decryptCredential } from "../../runner/src/crypto.ts";
 import { smsCooldownSchema, type LoginLimitRule } from "../src/lib/login-cooldown.ts";
 
+import { verifySeo } from "./seo-integration.ts";
+
 const base = process.env.TEST_SITE_URL || "http://localhost:3000";
 if (!["localhost", "127.0.0.1"].includes(new URL(base).hostname))
   throw new Error("Integration tests only allow localhost");
+await verifySeo(base);
 const token = process.env.RUNNER_SERVICE_TOKEN || "";
 async function expectRateLimit(response: Response, rule: LoginLimitRule, message: RegExp) {
   assert.equal(response.status, 429);
@@ -207,6 +210,12 @@ await login(
 );
 const first = await a.rpc.dashboard();
 const second = await b.rpc.dashboard();
+const entry = await a.fetch(`${base}/`, { redirect: "manual" });
+assert.equal(entry.status, 302);
+assert.equal(new URL(entry.headers.get("location")!, base).pathname, "/tasks");
+const taskPage = await a.fetch(`${base}/tasks`, { redirect: "manual" });
+assert.equal(taskPage.status, 200);
+assert.match(taskPage.headers.get("x-robots-tag") || "", /noindex/);
 assert.notEqual(first.account, second.account);
 assert.equal(first.nickname, "测试盒友");
 assert.equal(first.avatar, null);
@@ -442,6 +451,9 @@ assert.equal(
 assert.equal((await observer.rpc.dashboard()).today?.status, "cancelled");
 assert.equal((await accountList(device)).accounts.length, 1);
 assert.equal((await revoked.auth("heybox/switch", { account: "81001" })).status, 401);
+const expiredTaskPage = await revoked.fetch(`${base}/tasks`, { redirect: "manual" });
+assert.equal(expiredTaskPage.status, 302);
+assert.equal(new URL(expiredTaskPage.headers.get("location")!, base).pathname, "/login");
 assert.equal(await stats(), countBefore + 2, "logout retains the hosting record");
 await addOnDevice(device, "13400081001");
 assert.equal((await observer.rpc.dashboard()).enabled, true, "logging back in resumes the account");

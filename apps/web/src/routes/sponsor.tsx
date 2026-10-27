@@ -1,7 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowUpRight } from "lucide-react";
+import { publicPageHead } from "../lib/seo";
 export const Route = createFileRoute("/sponsor")({
-  head: () => ({ meta: [{ title: "赞助 · Heybox Daily" }] }),
+  head: () =>
+    publicPageHead(
+      "/sponsor",
+      "赞助 · Heybox Daily",
+      "通过微信或支付宝支持 Heybox Daily 开源小黑盒自动签到项目。",
+    ),
   component: Sponsor,
 });
 function Sponsor() {

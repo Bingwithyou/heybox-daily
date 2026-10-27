@@ -19,7 +19,7 @@ export const useAccount = () => useContext(AccountContext);
 
 export function Layout({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<Account | null>(null);
-  const [info, setInfo] = useState<"privacy" | "help" | "delete" | "logout" | null>(null);
+  const [info, setInfo] = useState<"error" | "delete" | "logout" | null>(null);
   const [actionAccount, setActionAccount] = useState<Account | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [count, setCount] = useState<number | null>(null);
@@ -64,10 +64,10 @@ export function Layout({ children }: { children: ReactNode }) {
     setBusy(true);
     try {
       await authRequest("heybox/switch", { account: target.account });
-      window.location.assign("/");
+      window.location.assign("/tasks");
     } catch (e) {
       setError(readableError(e));
-      setInfo("help");
+      setInfo("error");
       setBusy(false);
     }
   }
@@ -83,7 +83,7 @@ export function Layout({ children }: { children: ReactNode }) {
           ...(remove ? { confirm: true } : {}),
         },
       );
-      window.location.assign(result.account ? "/" : "/login");
+      window.location.assign(result.account ? "/tasks" : "/login");
     } catch (e) {
       setError(readableError(e));
       setBusy(false);
@@ -111,7 +111,7 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               {account && (
                 <Link
-                  to="/"
+                  to="/tasks"
                   className="hidden text-muted-foreground hover:text-foreground sm:block"
                   activeProps={{ className: "text-foreground" }}
                 >
@@ -145,6 +145,12 @@ export function Layout({ children }: { children: ReactNode }) {
                   <Menu.Portal>
                     <Menu.Positioner align="end" sideOffset={8} className="z-40">
                       <Menu.Popup className="w-64 max-w-[calc(100vw-2rem)] rounded-lg border bg-white p-1 shadow-lg outline-none">
+                        <Menu.Item
+                          className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted sm:hidden"
+                          onClick={() => navigate({ to: "/tasks" })}
+                        >
+                          我的任务
+                        </Menu.Item>
                         {accounts.map((item) => (
                           <Menu.Item
                             key={item.account}
@@ -242,8 +248,9 @@ export function Layout({ children }: { children: ReactNode }) {
         <main className="flex-1">{children}</main>
         <footer className="mx-auto w-full max-w-6xl px-6 pb-8 text-sm text-muted-foreground sm:px-8">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t pt-6">
-            <button onClick={() => setInfo("help")}>使用说明</button>
-            <button onClick={() => setInfo("privacy")}>隐私说明</button>
+            <Link to="/about">关于</Link>
+            <Link to="/help">使用说明</Link>
+            <Link to="/privacy">隐私说明</Link>
             {count !== null && (
               <span className="ml-auto">已接入 {count.toLocaleString("zh-CN")} 个账号</span>
             )}
@@ -256,30 +263,10 @@ export function Layout({ children }: { children: ReactNode }) {
           if (!open && !busy) setInfo(null);
         }}
         title={
-          info === "privacy"
-            ? "隐私说明"
-            : info === "delete"
-              ? "删除托管数据？"
-              : info === "logout"
-                ? "退出当前账号？"
-                : "使用说明"
+          info === "delete" ? "删除托管数据？" : info === "logout" ? "退出当前账号？" : "操作失败"
         }
       >
-        {info === "privacy" ? (
-          <div className="space-y-4 text-base leading-7 text-muted-foreground">
-            <p>
-              我们保存你的盒友 ID、昵称、头像、加密后的小黑盒登录态、网站会话和最近 30
-              天的任务记录，用于执行你开启的每日任务。
-            </p>
-            <p>
-              手机号和验证码仅在登录时使用，不写入数据库。验证码挑战最多保留 5
-              分钟，登录态只在执行端解密。
-            </p>
-            <p>
-              可随时暂停任务或删除托管数据。删除会撤销网站会话并移除登录态和任务记录；已经发送的小黑盒请求无法撤回。
-            </p>
-          </div>
-        ) : info === "delete" || info === "logout" ? (
+        {info === "delete" || info === "logout" ? (
           <>
             <p className="text-base leading-7 text-muted-foreground">
               {info === "logout"
@@ -305,21 +292,9 @@ export function Layout({ children }: { children: ReactNode }) {
             </div>
           </>
         ) : (
-          <div className="space-y-4 text-base leading-7 text-muted-foreground">
-            <p>
-              用小黑盒手机号和验证码登录后，每天北京时间 00:01
-              开始执行签到和三项分享任务。首次登录会先补跑今天未完成的任务。
-            </p>
-            <p>登录可能让手机 APP 退出。登录态失效时任务会暂停，需要你重新登录。</p>
-            <p>
-              在“我的任务”可暂停、恢复或补跑。退出登录会暂停当前账号任务并保留记录；删除托管数据会停止后续任务。
-            </p>
-            {error && (
-              <p role="alert" className="text-destructive">
-                {error}
-              </p>
-            )}
-          </div>
+          <p role="alert" className="text-base leading-7 text-destructive">
+            {error}
+          </p>
         )}
       </Modal>
     </AccountContext.Provider>
