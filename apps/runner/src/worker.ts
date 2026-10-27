@@ -22,7 +22,7 @@ export function failureCategory(error: unknown) {
   return 'internal';
 }
 
-export function publicSnapshot(value: Inspection): TaskSnapshot {
+function publicSnapshot(value: Inspection): TaskSnapshot {
   return { exp: value.exp, coin: value.coin, tasks: taskIds.map(id => ({ id,
     state: (id === 'sign' ? value.signed : value.tasks.find(task => task.id === id)?.state === 'finish') ? 'finish' : 'waiting' })) };
 }

@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { Store } from "./store.ts";
 
 type Context = Parameters<typeof setSessionCookie>[0];
-export const expectedAccountSchema = z.object({ expectedAccount: z.string().min(1).max(64) });
+const expectedAccountSchema = z.object({ expectedAccount: z.string().min(1).max(64) });
 const accountOf = (userId: string) => userId.replace(/^heybox:/, "");
 
 // Use Better Auth's signed, HttpOnly device-session cookie convention. Tokens never

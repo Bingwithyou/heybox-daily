@@ -20,12 +20,11 @@ interface LoginResult {
   account_detail?: { userid?: string | number };
   pkey?: string;
 }
-type LoginClient = Pick<HeyboxClient, 'native' | 'tasks' | 'signState'>;
+type LoginClient = Pick<HeyboxClient, 'native' | 'tasks'>;
 export interface LoginDependencies {
   captcha?: { ticket: string; randstr: string };
   getDeviceToken?: () => Promise<string>;
   clientFactory?: (config: Config) => LoginClient;
-  preflight?: (config: Config) => void;
 }
 function captchaQuery(proof: LoginDependencies['captcha']): Query {
   if (!proof) return {};
@@ -61,8 +60,6 @@ export function createLoginConfig(token: string): Config {
 
 export async function prepareLogin(options: LoginDependencies = {}) {
   const config = createLoginConfig('');
-  // Sending the code signs locally before making its HTTP request.
-  options.preflight?.(config);
   const token = await (options.getDeviceToken || getDeviceToken)();
   if (!/^B[A-Za-z0-9+/=_-]{88}$/.test(token)) throw new Error('官网返回的设备令牌格式异常');
   config.session.x_xhh_tokenid = token;

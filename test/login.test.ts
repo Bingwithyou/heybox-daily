@@ -23,7 +23,6 @@ function clientWith(native: NativeStub, overrides: Partial<Omit<LoginClient, 'na
   return {
     native: async <T>(...args: NativeArguments) => await native(...args) as T,
     tasks: async () => taskResult,
-    signState: async () => ({ state: 'ok', signed_date: 1 }),
     ...overrides,
   };
 }
@@ -42,7 +41,7 @@ function fixture(overrides: Partial<LoginOptions> = {}) {
   const requests: Array<{ endpoint: string; config: Config; extra?: Query; body?: URLSearchParams }> = [];
   const answers = ['13800138000', '1234'];
   const options: LoginOptions = {
-    file, preflight: () => {}, getDeviceToken: async () => token,
+    file, getDeviceToken: async () => token,
     ask: async question => { questions.push(question); return nextAnswer(answers); }, log: message => { logs.push(message); },
     clientFactory: config => clientWith(async (endpoint, extra, body) => {
       requests.push({ endpoint, config, extra, body });
@@ -113,7 +112,7 @@ test('SDK failure sends no SMS and preserves the existing config', async () => {
 
 test('verification failure cannot replace an existing configuration', async () => {
   const f = fixture({ clientFactory: () => clientWith(async endpoint => endpoint.includes('get_login_code') ? {} : loginResult, {
-    tasks: async () => { throw new Error('readback failed'); }, signState: async () => ({}) }) });
+    tasks: async () => { throw new Error('readback failed'); } }) });
   try {
     await assert.rejects(runSmsLogin(f.options), /readback failed/);
     assert.equal(readFileSync(f.file, 'utf8'), 'existing configuration');
@@ -121,14 +120,11 @@ test('verification failure cannot replace an existing configuration', async () =
 });
 
 test('login verifies the account and profile without querying sign-in state', async () => {
-  let signReads = 0;
   const authenticated = await verifyLoginCode(createLoginConfig(token), '13800138000', '1234', {
     clientFactory: () => clientWith(async () => loginResult, {
       tasks: async () => ({ ...taskResult, user: { ...taskResult.user, username: '测试盒友', avatar: 'https://cdn.max-c.com/avatar/test.png' } }),
-      signState: async () => { signReads++; return {}; },
     }),
   });
-  assert.equal(signReads, 0, 'sign-in state is irrelevant to credential validation');
   assert.deepEqual(authenticated.profile, { nickname: '测试盒友', avatar: 'https://cdn.max-c.com/avatar/test.png' });
 });
 
