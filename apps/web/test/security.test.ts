@@ -10,6 +10,7 @@ import {
 import type { Env } from "../src/server/env.ts";
 import { authRequest } from "../src/lib/client.ts";
 import { LoginFailure } from "@heybox/contracts";
+import type { SmsCooldown } from "../src/lib/login-cooldown.ts";
 
 test("service calls use Workers-compatible manual redirects and never follow them with credentials", async () => {
   const original = globalThis.fetch;
@@ -139,4 +140,49 @@ test("the browser retains the throttle code so it can exit a rejected CAPTCHA fl
     assert.ok(!error.message.includes("private-provider-details"));
     return true;
   });
+});
+
+test("a rejected SMS response still synchronizes its authoritative cooldown", async (t) => {
+  const cooldown: SmsCooldown = {
+    serverTime: 100_000,
+    limits: [{ rule: "sms:phone:minute", retryAt: 146_000 }],
+  };
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        code: "upstream_rate_limit",
+        smsCooldown: cooldown,
+      },
+      { status: 400 },
+    ),
+  );
+  let received: SmsCooldown | undefined;
+  await assert.rejects(
+    authRequest("heybox/send-code", {}, (value) => {
+      received = value;
+    }),
+    LoginFailure,
+  );
+  assert.deepEqual(received, cooldown);
+});
+
+test("the generic auth limiter has a Chinese message and honors its remaining retry time", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      {
+        message: "Too many requests. Please try again later.",
+      },
+      { status: 429, headers: { "X-Retry-After": "7" } },
+    ),
+  );
+  let retrySeconds = 0;
+  await assert.rejects(
+    authRequest("heybox/send-code", {}, (value, authoritative) => {
+      assert.equal(authoritative, false);
+      assert.equal(value.limits[0].rule, "auth:ip:endpoint");
+      retrySeconds = (value.limits[0].retryAt - value.serverTime) / 1000;
+    }),
+    /登录接口.*频繁/,
+  );
+  assert.equal(retrySeconds, 7);
 });

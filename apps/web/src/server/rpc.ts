@@ -14,6 +14,11 @@ const authenticated = os
     if (!session) throw new ORPCError("UNAUTHORIZED", { message: "请先登录" });
     return next({ context: { userId: session.user.id, store: new Store(context.env.DB) } });
   });
+const accountInput = z.object({ expectedAccount: z.string().min(1).max(64) });
+function checkAccount(userId: string, expectedAccount: string) {
+  if (userId !== `heybox:${expectedAccount}`)
+    throw new ORPCError("CONFLICT", { message: "当前账号已变化，请刷新页面后重试" });
+}
 export const router = {
   dashboard: authenticated.handler(async ({ context }) => {
     const dashboard = await context.store.dashboard(context.userId);
@@ -21,13 +26,15 @@ export const router = {
     return dashboard;
   }),
   setEnabled: authenticated
-    .input(z.object({ enabled: z.boolean() }))
+    .input(accountInput.extend({ enabled: z.boolean() }))
     .handler(async ({ context, input }) => {
+      checkAccount(context.userId, input.expectedAccount);
       await context.store.setEnabled(context.userId, input.enabled);
       if (input.enabled) await notifyRunner(context.env);
       return { ok: true };
     }),
-  retry: authenticated.handler(async ({ context }) => {
+  retry: authenticated.input(accountInput).handler(async ({ context, input }) => {
+    checkAccount(context.userId, input.expectedAccount);
     if (!(await context.store.quota(`retry:${context.userId}`, 3, 3600_000)))
       throw new ORPCError("TOO_MANY_REQUESTS", { message: "补跑次数过多，请稍后重试" });
     await context.store.enqueue(context.userId, true);
@@ -35,8 +42,9 @@ export const router = {
     return { ok: true };
   }),
   deleteAccount: authenticated
-    .input(z.object({ confirm: z.literal(true) }))
-    .handler(async ({ context }) => {
+    .input(accountInput.extend({ confirm: z.literal(true) }))
+    .handler(async ({ context, input }) => {
+      checkAccount(context.userId, input.expectedAccount);
       await context.store.deleteUser(context.userId);
       return { ok: true };
     }),

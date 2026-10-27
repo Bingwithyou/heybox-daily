@@ -317,6 +317,10 @@ export class Store {
     ]);
     if (enabled) await this.enqueue(userId, true);
   }
+  async accountCount() {
+    const row = await this.sql("SELECT COUNT(*) AS count FROM hosting").first<{ count: number }>();
+    return row?.count ?? 0;
+  }
   async deleteUser(userId: string) {
     await this.sql("DELETE FROM user WHERE id=?", userId).run();
   }
@@ -357,6 +361,16 @@ export class Store {
       today: history.find((row) => row.date === beijingDate(this.now())) || null,
       history,
     };
+  }
+  async quotaStates(keys: string[]) {
+    if (!keys.length) return [];
+    return (
+      await this.sql(
+        `SELECT key,count,expires_at AS retryAt FROM rate_limits WHERE key IN (${keys.map(() => "?").join(",")}) AND expires_at>?`,
+        ...keys,
+        this.now(),
+      ).all<{ key: string; count: number; retryAt: number }>()
+    ).results;
   }
   async quota(key: string, limit: number, windowMs: number) {
     const now = this.now();

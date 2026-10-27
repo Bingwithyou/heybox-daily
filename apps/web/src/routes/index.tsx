@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Clock3, CircleAlert, LoaderCircle } from "lucide-react";
 import { taskIds, taskNames, publicReasons } from "@heybox/contracts";
 import { Button } from "../components/ui/button";
@@ -16,21 +16,25 @@ const statusNames: Record<string, string> = {
   completed: "已完成",
   failed: "未完成",
   cancelled: "已停止",
-  auth_expired: "需要重新验证",
+  auth_expired: "需要重新登录",
 };
 function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const { setAccount } = useAccount();
+  const { account, setAccount } = useAccount();
+  const requestId = useRef(0);
   const navigate = useNavigate();
   const refresh = useCallback(async () => {
+    const id = ++requestId.current;
     try {
       const value = await client.dashboard();
+      if (id !== requestId.current) return;
       setData(value);
       setAccount(value);
       setError("");
     } catch (e) {
+      if (id !== requestId.current) return;
       if (e && typeof e === "object" && "code" in e && e.code === "UNAUTHORIZED") {
         setAccount(null);
         await navigate({ to: "/login" });
@@ -40,7 +44,10 @@ function Dashboard() {
   const polling = data?.today?.status === "running" || data?.today?.status === "queued";
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    return () => {
+      requestId.current++;
+    };
+  }, [refresh, account?.account]);
   useEffect(() => {
     const timer = window.setInterval(
       () => {
@@ -62,7 +69,7 @@ function Dashboard() {
       setBusy(false);
     }
   }
-  if (!data)
+  if (!data || (account && data.account !== account.account))
     return (
       <section className="mx-auto max-w-6xl px-6 py-20 sm:px-8">
         <p role={error ? "alert" : "status"} className="text-base text-muted-foreground">
@@ -106,7 +113,9 @@ function Dashboard() {
             id="automation"
             checked={data.enabled}
             disabled={busy || expired}
-            onCheckedChange={(enabled) => change(() => client.setEnabled({ enabled }))}
+            onCheckedChange={(enabled) =>
+              change(() => client.setEnabled({ enabled, expectedAccount: data.account }))
+            }
           />
           <p className="text-sm text-muted-foreground">
             {data.enabled || expired
@@ -121,8 +130,12 @@ function Dashboard() {
       {expired && (
         <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-md bg-amber-50 px-4 py-3 text-sm">
           <span>需要重新登录小黑盒，自动任务已暂停。</span>
-          <Link to="/login" className="font-medium underline underline-offset-4">
-            重新验证
+          <Link
+            to="/login"
+            search={{ account: data.account }}
+            className="font-medium underline underline-offset-4"
+          >
+            重新登录
           </Link>
         </div>
       )}
@@ -145,7 +158,7 @@ function Dashboard() {
           <Button
             className="h-10 px-4 text-base"
             disabled={busy || running}
-            onClick={() => change(() => client.retry())}
+            onClick={() => change(() => client.retry({ expectedAccount: data.account }))}
           >
             {running ? statusNames[today!.status] : "重试未完成任务"}
           </Button>

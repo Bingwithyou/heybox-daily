@@ -17,7 +17,8 @@ export default {
     result.headers.set("referrer-policy", "same-origin");
     result.headers.set("x-frame-options", "DENY");
     result.headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
-    result.headers.set("cache-control", "no-store");
+    if (new URL(request.url).pathname !== "/api/stats" || request.method !== "GET" || !response.ok)
+      result.headers.set("cache-control", "no-store");
     result.headers.set("server-timing", `app;dur=${(performance.now() - started).toFixed(1)}`);
     return result;
   },

@@ -75,16 +75,25 @@ try {
     ...common,
   ]).done;
   // An exhausted legacy site quota must not block unrelated users.
-  const siteQuotaKey = createHmac("sha256", config.vars.BETTER_AUTH_SECRET)
-    .update("sms:site:hour")
-    .digest("hex");
+  const exhaustedQuotas = [
+    ["sms:site:hour", 60],
+    ["sms:phone:day:+8613900000008", 6],
+    ["sms:ip:day:127.255.0.1", 30],
+    ["verify:ip:127.255.0.2", 30],
+    ["captcha:ip:127.255.0.3", 30],
+    ["auth:127.255.0.4|/get-session", 100],
+  ] as const;
+  const quotaValues = exhaustedQuotas.map(([value, count]) => {
+    const hashed = createHmac("sha256", config.vars.BETTER_AUTH_SECRET).update(value).digest("hex");
+    return `('${hashed}',${count},${Date.now() + 3600_000})`;
+  });
   await run(wrangler, [
     "d1",
     "execute",
     "heybox-daily",
     "--local",
     "--command",
-    `INSERT INTO rate_limits(key,count,expires_at) VALUES('${siteQuotaKey}',60,${Date.now() + 3600_000})`,
+    `INSERT INTO rate_limits(key,count,expires_at) VALUES${quotaValues.join(",")}`,
     ...common,
   ]).done;
   worker = run(wrangler, [
@@ -117,9 +126,31 @@ try {
     CREDENTIAL_KEY: key,
   }).done;
   console.log(result.trim());
+  const rateLimitEvents = [
+    ...worker.output().matchAll(/\{"event":"auth_rate_limited"[^\n]+\}/g),
+  ].map(([line]) => JSON.parse(line) as Record<string, unknown>);
+  const expectedLimits = [
+    ["sms:ip:minute", 3, 60],
+    ["sms:ip:day", 30, 86400],
+    ["sms:phone:minute", 1, 60],
+    ["sms:phone:day", 6, 86400],
+    ["verify:ip", 30, 300],
+    ["captcha:ip", 30, 300],
+    ["auth:ip:endpoint", 100, 10],
+  ] as const;
+  assert.equal(rateLimitEvents.length, expectedLimits.length + 1);
+  assert.equal(rateLimitEvents.filter((event) => event.rule === "sms:phone:minute").length, 2);
+  for (const [rule, limit, windowSeconds] of expectedLimits) {
+    assert.deepEqual(
+      rateLimitEvents.find((event) => event.rule === rule),
+      { event: "auth_rate_limited", rule, limit, windowSeconds },
+      "rate-limit diagnostics identify the rule without logging phone, IP, cookie or quota key",
+    );
+  }
+  console.log("PASS: all seven auth limits emit distinct, credential-free diagnostics");
   assert.equal(
     notifications,
-    6,
+    14,
     "successful logins, resume and retry must reach the authenticated runner wakeup endpoint",
   );
   console.log(

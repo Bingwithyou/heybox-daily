@@ -12,7 +12,10 @@ const authPaths = new Set([
   "/api/auth/heybox/verify-code",
   "/api/auth/heybox/complete-captcha",
   "/api/auth/get-session",
-  "/api/auth/sign-out",
+  "/api/auth/heybox/accounts",
+  "/api/auth/heybox/switch",
+  "/api/auth/heybox/logout",
+  "/api/auth/heybox/delete",
 ]);
 export async function api(request: Request, env: Env): Promise<Response | null> {
   const path = new URL(request.url).pathname;
@@ -25,6 +28,14 @@ export async function api(request: Request, env: Env): Promise<Response | null> 
     env.RUNNER_SERVICE_TOKEN.length < 32
   ) {
     return Response.json({ message: "服务尚未配置完成" }, { status: 503 });
+  }
+  if (path === "/api/stats" && request.method === "GET") {
+    return Response.json(
+      { accounts: await new Store(env.DB).accountCount() },
+      {
+        headers: { "Cache-Control": "public, max-age=300" },
+      },
+    );
   }
   if (path.startsWith("/internal/")) {
     if (!(await serviceAuthorized(request, env.RUNNER_SERVICE_TOKEN)))

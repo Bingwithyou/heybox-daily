@@ -7,26 +7,79 @@ import { authRequest } from "../lib/client";
 import { readableError } from "../lib/utils";
 import { useAccount, type Account } from "../components/layout";
 import { showCaptcha } from "../lib/captcha";
+import {
+  activeCooldown,
+  applySmsCooldown,
+  cooldownStorageKey,
+  emptyCooldownState,
+  formatCooldown,
+  loginLimitMessages,
+  restoreCooldown,
+  startSmsRequest,
+  type CooldownState,
+} from "../lib/login-cooldown";
 
 type LoginResult = LoginProgress | (Account & { status: "authenticated" });
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "登录 · Heybox Daily" }] }),
-  component: Login,
+  validateSearch: (search: Record<string, unknown>): { account?: string } => ({
+    account:
+      typeof search.account === "string" && /^\d{1,64}$/.test(search.account)
+        ? search.account
+        : undefined,
+  }),
+  component: () => {
+    const { account } = Route.useSearch();
+    return <Login key={account || "add"} />;
+  },
 });
 function Login() {
+  const { account: targetAccount } = Route.useSearch();
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [challenge, setChallenge] = useState<LoginProgress | null>(null);
-  const [cooldown, setCooldown] = useState(0);
+  const [cooldownState, setCooldownState] = useState(emptyCooldownState);
+  const cooldownRef = useRef(cooldownState);
+  const [now, setNow] = useState(Date.now);
+  const [restored, setRestored] = useState(false);
   const [busy, setBusy] = useState<"send" | "verify" | "captcha" | null>(null);
   const [error, setError] = useState("");
   const [sentTo, setSentTo] = useState("");
-  const { setAccount } = useAccount();
+  const { setAccount, refreshAccounts } = useAccount();
   const navigate = useNavigate();
   const captchaAbort = useRef<AbortController | null>(null);
+  const parsedPhone = phoneSchema.safeParse(phone);
+  const cooldown = activeCooldown(cooldownState, parsedPhone.success ? parsedPhone.data : "", now);
+  function saveCooldown(next: CooldownState) {
+    cooldownRef.current = next;
+    setCooldownState(next);
+    setNow(Date.now());
+    try {
+      if (next.entries.length) sessionStorage.setItem(cooldownStorageKey, JSON.stringify(next));
+      else sessionStorage.removeItem(cooldownStorageKey);
+    } catch {
+      /* The server still enforces the quota if browser storage is unavailable. */
+    }
+  }
   useEffect(() => {
-    const timer = window.setInterval(() => setCooldown((value) => Math.max(0, value - 1)), 1000);
+    try {
+      const saved = restoreCooldown(sessionStorage.getItem(cooldownStorageKey));
+      cooldownRef.current = saved;
+      setCooldownState(saved);
+      setPhone(saved.phone);
+      const active = activeCooldown(saved, saved.phone);
+      if (active)
+        setError(
+          active.rule === "pending"
+            ? "上次验证码请求尚未确认，请等待倒计时结束后再试"
+            : loginLimitMessages[active.rule],
+        );
+    } catch {
+      /* Continue with server-enforced limits when browser storage is unavailable. */
+    }
+    setRestored(true);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(timer);
       captchaAbort.current?.abort();
@@ -34,29 +87,47 @@ function Login() {
   }, []);
   async function applyResult(result: LoginResult) {
     if (result.status === "authenticated") {
+      saveCooldown(emptyCooldownState());
       setAccount(result);
+      await refreshAccounts();
       await navigate({ to: "/" });
       return;
     }
     setChallenge(result);
     if (result.status === "sent") {
-      setCooldown(result.retryAfter);
       setSentTo(phone.slice(-4));
       if (result.message) setError(result.message);
     }
   }
   async function send() {
+    if (!restored || busy !== null) return;
     setError("");
     const parsed = phoneSchema.safeParse(phone);
     if (!parsed.success) {
       setError("请输入有效手机号，海外号码需包含国家或地区区号");
       return;
     }
+    const active = activeCooldown(cooldownRef.current, parsed.data);
+    if (active) {
+      setError(
+        active.rule === "pending" ? "请等待倒计时结束后再试" : loginLimitMessages[active.rule],
+      );
+      return;
+    }
+    saveCooldown(startSmsRequest(cooldownRef.current, parsed.data));
     setBusy("send");
     try {
-      const result = await authRequest<LoginProgress>("heybox/send-code", {
-        phone: parsed.data,
-      });
+      const result = await authRequest<LoginProgress>(
+        "heybox/send-code",
+        {
+          phone: parsed.data,
+          ...(targetAccount ? { expectedAccount: targetAccount } : {}),
+        },
+        (value, authoritative) =>
+          saveCooldown(
+            applySmsCooldown(cooldownRef.current, parsed.data, value, Date.now(), authoritative),
+          ),
+      );
       setSentTo("");
       await applyResult(result);
     } catch (e) {
@@ -125,8 +196,12 @@ function Login() {
   }
   return (
     <section className="mx-auto w-full max-w-[528px] px-6 pt-16 pb-16 sm:pt-24">
-      <h1 className="text-center text-4xl font-semibold tracking-tight">登录</h1>
-      <p className="mt-4 text-center text-base text-muted-foreground">使用小黑盒账号开启每日任务</p>
+      <h1 className="text-center text-4xl font-semibold tracking-tight">
+        {targetAccount ? "重新登录" : "登录"}
+      </h1>
+      <p className="mt-4 text-center text-base text-muted-foreground">
+        {targetAccount ? `请登录盒友 ${targetAccount} 对应的账号` : "使用小黑盒账号开启每日任务"}
+      </p>
       <form className="mt-10 space-y-6" onSubmit={login}>
         <div>
           <label htmlFor="phone" className="mb-2.5 block text-base font-medium">
@@ -141,11 +216,15 @@ function Login() {
             placeholder="输入小黑盒手机号"
             maxLength={16}
             value={phone}
-            disabled={busy !== null || cooldown > 0}
+            disabled={busy !== null}
             onChange={(event) => {
-              setPhone(event.target.value);
+              const value = event.target.value;
+              setPhone(value);
               setChallenge(null);
               setSentTo("");
+              const parsed = phoneSchema.safeParse(value);
+              const active = activeCooldown(cooldownRef.current, parsed.success ? parsed.data : "");
+              setError(active && active.rule !== "pending" ? loginLimitMessages[active.rule] : "");
             }}
             className="h-12 rounded-md px-3"
           />
@@ -171,10 +250,16 @@ function Login() {
               type="button"
               variant="outline"
               className="h-12 min-w-28 rounded-md px-4 text-base"
-              disabled={busy !== null || cooldown > 0 || challenge?.status === "captcha"}
+              disabled={
+                !restored || busy !== null || cooldown !== null || challenge?.status === "captcha"
+              }
               onClick={send}
             >
-              {busy === "send" ? "发送中…" : cooldown > 0 ? `${cooldown} 秒后重发` : "发送验证码"}
+              {busy === "send"
+                ? "发送中…"
+                : cooldown
+                  ? formatCooldown(cooldown.seconds)
+                  : "发送验证码"}
             </Button>
           </div>
           {sentTo && (

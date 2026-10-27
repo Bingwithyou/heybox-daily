@@ -1,47 +1,101 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useCallback, useState, type ReactNode } from "react";
 import { Menu } from "@base-ui/react/menu";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Plus } from "lucide-react";
 import { Button } from "./ui/button";
 import { Modal } from "./dialog";
-import { authRequest, client } from "../lib/client";
+import { authRequest } from "../lib/client";
+import { readAccounts, type Account } from "../lib/accounts";
+export type { Account } from "../lib/accounts";
 import { readableError } from "../lib/utils";
 
 const AccountContext = createContext<{
   account: Account | null;
   setAccount: (account: Account | null) => void;
-}>({ account: null, setAccount: () => {} });
+  refreshAccounts: () => Promise<void>;
+}>({ account: null, setAccount: () => {}, refreshAccounts: async () => {} });
 export const useAccount = () => useContext(AccountContext);
-export type Account = { account: string; nickname?: string; avatar?: string | null };
 
 export function Layout({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<Account | null>(null);
   const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
-  const [info, setInfo] = useState<"privacy" | "help" | "delete" | null>(null);
+  const [info, setInfo] = useState<"privacy" | "help" | "delete" | "logout" | null>(null);
+  const [actionAccount, setActionAccount] = useState<Account | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [count, setCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const navigate = useNavigate();
-  async function logout() {
-    await authRequest("sign-out", {});
-    setAccount(null);
-    await navigate({ to: "/login" });
-  }
-  async function remove() {
+  const refreshAccounts = useCallback(async () => {
+    const value = await readAccounts();
+    setAccounts(value.accounts);
+    setAccount(value.accounts.find((item) => item.account === value.activeAccount) || null);
+  }, []);
+  useEffect(() => {
+    void refreshAccounts().catch(() => {});
+    const refresh = () => {
+      void refreshAccounts().catch(() => {});
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [refreshAccounts]);
+  useEffect(() => {
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/api/stats", { cache: "reload" });
+        if (!response.ok) return;
+        const value = (await response.json()) as { accounts: number };
+        if (!disposed) setCount(value.accounts);
+      } catch {
+        /* Keep the last known count during a network interruption. */
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 300_000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [account?.account]);
+  async function switchAccount(target: Account) {
     setBusy(true);
-    setError("");
     try {
-      await client.deleteAccount({ confirm: true });
-      setAccount(null);
-      setInfo(null);
-      await navigate({ to: "/login" });
+      await authRequest("heybox/switch", { account: target.account });
+      window.location.assign("/");
     } catch (e) {
       setError(readableError(e));
-    } finally {
+      setInfo("help");
       setBusy(false);
     }
   }
+  async function leave(remove: boolean) {
+    if (!actionAccount) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await authRequest<{ account: string | null }>(
+        remove ? "heybox/delete" : "heybox/logout",
+        {
+          expectedAccount: actionAccount.account,
+          ...(remove ? { confirm: true } : {}),
+        },
+      );
+      window.location.assign(result.account ? "/" : "/login");
+    } catch (e) {
+      setError(readableError(e));
+      setBusy(false);
+    }
+  }
+  function confirmAction(action: "logout" | "delete") {
+    setActionAccount(account);
+    setError("");
+    setInfo(action);
+  }
   return (
-    <AccountContext.Provider value={{ account, setAccount }}>
+    <AccountContext.Provider value={{ account, setAccount, refreshAccounts }}>
       <div className="flex min-h-dvh flex-col">
         <header className="border-b">
           <div className="mx-auto flex h-20 max-w-6xl items-center justify-between gap-4 px-6 sm:px-8">
@@ -71,7 +125,19 @@ export function Layout({ children }: { children: ReactNode }) {
               >
                 赞助
               </Link>
-              {account ? (
+              <a
+                href="https://github.com/Cansiny0320/heybox-daily"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="GitHub 仓库"
+                title="GitHub 仓库"
+                className="hidden shrink-0 text-muted-foreground hover:text-foreground sm:inline-flex"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="size-5">
+                  <path d="M12 .75a11.25 11.25 0 0 0-3.558 21.923c.563.105.77-.244.77-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.79-1.509-3.79-1.509-.512-1.3-1.25-1.646-1.25-1.646-1.022-.699.077-.685.077-.685 1.13.08 1.725 1.16 1.725 1.16 1.005 1.723 2.636 1.225 3.278.937.103-.728.393-1.225.715-1.507-2.499-.284-5.126-1.25-5.126-5.563 0-1.229.44-2.233 1.16-3.02-.116-.284-.503-1.429.11-2.978 0 0 .945-.302 3.094 1.154A10.79 10.79 0 0 1 12 6.191a10.8 10.8 0 0 1 2.818.379c2.148-1.456 3.091-1.154 3.091-1.154.615 1.549.228 2.694.112 2.978.722.787 1.159 1.791 1.159 3.02 0 4.324-2.631 5.276-5.138 5.555.404.349.765 1.039.765 2.094 0 1.512-.014 2.732-.014 3.103 0 .301.203.653.774.542A11.25 11.25 0 0 0 12 .75Z" />
+                </svg>
+              </a>
+              {account || accounts.length ? (
                 <Menu.Root>
                   <Menu.Trigger
                     aria-label="账号菜单"
@@ -82,59 +148,99 @@ export function Layout({ children }: { children: ReactNode }) {
                       />
                     }
                   >
-                    {account.avatar && account.avatar !== failedAvatar ? (
+                    {account?.avatar && account?.avatar !== failedAvatar ? (
                       <img
-                        src={account.avatar}
+                        src={account?.avatar}
                         alt=""
                         width={32}
                         height={32}
                         referrerPolicy="no-referrer"
                         className="size-8 shrink-0 rounded-full object-cover"
-                        onError={() => setFailedAvatar(account.avatar || null)}
+                        onError={() => setFailedAvatar(account?.avatar || null)}
                       />
                     ) : (
                       <span
                         aria-hidden="true"
                         className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm"
                       >
-                        {(account.nickname || "盒友").slice(0, 1)}
+                        {(account?.nickname || "盒友").slice(0, 1)}
                       </span>
                     )}
                     <span className="min-w-0 truncate">
-                      {account.nickname || `盒友 ${account.account}`}
+                      {account?.nickname || (account ? `盒友 ${account.account}` : "选择账号")}
                     </span>
                     <ChevronDown className="size-4" />
                   </Menu.Trigger>
                   <Menu.Portal>
                     <Menu.Positioner align="end" sideOffset={8} className="z-40">
-                      <Menu.Popup className="min-w-44 rounded-lg border bg-white p-1 shadow-lg outline-none">
-                        <Menu.Item
-                          className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
-                          onClick={() => navigate({ to: "/login" })}
-                        >
-                          重新验证小黑盒
-                        </Menu.Item>
-                        <Menu.Item
-                          className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
-                          onClick={() => {
-                            void logout().catch((e) => {
-                              setError(readableError(e));
-                              setInfo("help");
-                            });
-                          }}
-                        >
-                          退出网站
-                        </Menu.Item>
+                      <Menu.Popup className="w-64 max-w-[calc(100vw-2rem)] rounded-lg border bg-white p-1 shadow-lg outline-none">
+                        {accounts.map((item) => (
+                          <Menu.Item
+                            key={item.account}
+                            disabled={busy}
+                            className="flex items-center gap-3 rounded px-3 py-3 outline-none data-highlighted:bg-muted"
+                            onClick={() => {
+                              if (item.account !== account?.account) void switchAccount(item);
+                            }}
+                          >
+                            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm">
+                              {(item.nickname || "盒友").slice(0, 1)}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate">{item.nickname || "盒友"}</span>
+                              <span className="block text-sm text-muted-foreground">
+                                盒友 {item.account}
+                              </span>
+                            </span>
+                            {item.account === account?.account && (
+                              <Check aria-label="当前账号" className="size-4" />
+                            )}
+                          </Menu.Item>
+                        ))}
                         <Menu.Separator className="my-1 h-px bg-border" />
                         <Menu.Item
-                          className="rounded px-3 py-2.5 text-base text-destructive outline-none data-highlighted:bg-muted"
-                          onClick={() => {
-                            setError("");
-                            setInfo("delete");
-                          }}
+                          disabled={busy || accounts.length >= 5}
+                          className="flex items-center gap-2 rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted data-disabled:text-muted-foreground"
+                          onClick={() => navigate({ to: "/login", search: {} })}
                         >
-                          删除托管数据
+                          <Plus className="size-4" />
+                          添加账号
                         </Menu.Item>
+                        {accounts.length >= 5 && (
+                          <p className="px-3 pb-2 text-xs text-muted-foreground">
+                            已登录 5 个账号，请先退出一个账号
+                          </p>
+                        )}
+                        {account && (
+                          <>
+                            <Menu.Item
+                              className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
+                              onClick={() =>
+                                navigate({ to: "/login", search: { account: account.account } })
+                              }
+                            >
+                              重新登录
+                            </Menu.Item>
+                            <Menu.Item
+                              className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
+                              disabled={busy}
+                              onClick={() => confirmAction("logout")}
+                            >
+                              退出登录
+                              <span className="mt-1 block text-xs text-muted-foreground">
+                                暂停当前账号的自动任务
+                              </span>
+                            </Menu.Item>
+                            <Menu.Separator className="my-1 h-px bg-border" />
+                            <Menu.Item
+                              className="rounded px-3 py-2.5 text-base text-destructive outline-none data-highlighted:bg-muted"
+                              disabled={busy}
+                              onClick={() => confirmAction("delete")}
+                            >
+                              删除托管数据
+                            </Menu.Item>
+                          </>
+                        )}
                       </Menu.Popup>
                     </Menu.Positioner>
                   </Menu.Portal>
@@ -152,20 +258,36 @@ export function Layout({ children }: { children: ReactNode }) {
         </header>
         <main className="flex-1">{children}</main>
         <footer className="mx-auto w-full max-w-6xl px-6 pb-8 text-sm text-muted-foreground sm:px-8">
-          <div className="flex gap-6 border-t pt-6">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 border-t pt-6">
             <button onClick={() => setInfo("privacy")}>隐私说明</button>
-            <a href="https://github.com/Cansiny0320/heybox-daily" target="_blank" rel="noreferrer">
+            <a
+              className="sm:hidden"
+              href="https://github.com/Cansiny0320/heybox-daily"
+              target="_blank"
+              rel="noreferrer"
+            >
               GitHub
             </a>
+            {count !== null && (
+              <span className="ml-auto">已接入 {count.toLocaleString("zh-CN")} 个账号</span>
+            )}
           </div>
         </footer>
       </div>
       <Modal
         open={info !== null}
         onOpenChange={(open) => {
-          if (!open) setInfo(null);
+          if (!open && !busy) setInfo(null);
         }}
-        title={info === "privacy" ? "隐私说明" : info === "delete" ? "删除托管数据？" : "使用说明"}
+        title={
+          info === "privacy"
+            ? "隐私说明"
+            : info === "delete"
+              ? "删除托管数据？"
+              : info === "logout"
+                ? "退出当前账号？"
+                : "使用说明"
+        }
       >
         {info === "privacy" ? (
           <div className="space-y-4 text-base leading-7 text-muted-foreground">
@@ -181,10 +303,12 @@ export function Layout({ children }: { children: ReactNode }) {
               可随时暂停任务或删除托管数据。删除会撤销网站会话并移除登录态和任务记录；已经发送的小黑盒请求无法撤回。
             </p>
           </div>
-        ) : info === "delete" ? (
+        ) : info === "delete" || info === "logout" ? (
           <>
             <p className="text-base leading-7 text-muted-foreground">
-              这会停止后续任务，删除保存的登录态和任务记录，并退出网站。已经发送的小黑盒请求无法撤回。
+              {info === "logout"
+                ? `退出后将暂停「${actionAccount?.nickname || actionAccount?.account}」的自动任务，保留登录态和历史记录。其他账号不受影响。`
+                : `这会删除「${actionAccount?.nickname || actionAccount?.account}」的登录态和任务记录，并退出该账号。其他账号不受影响，已发送的小黑盒请求无法撤回。`}
             </p>
             {error && (
               <p role="alert" className="mt-4 text-sm text-destructive">
@@ -195,8 +319,12 @@ export function Layout({ children }: { children: ReactNode }) {
               <Button variant="outline" disabled={busy} onClick={() => setInfo(null)}>
                 取消
               </Button>
-              <Button variant="destructive" disabled={busy} onClick={remove}>
-                {busy ? "正在删除…" : "删除数据"}
+              <Button
+                variant={info === "delete" ? "destructive" : "default"}
+                disabled={busy}
+                onClick={() => leave(info === "delete")}
+              >
+                {busy ? "正在处理…" : info === "delete" ? "删除数据" : "退出登录"}
               </Button>
             </div>
           </>
@@ -206,9 +334,9 @@ export function Layout({ children }: { children: ReactNode }) {
               用小黑盒手机号和验证码登录后，每天北京时间 00:01
               开始执行签到和三项分享任务。首次登录会先补跑今天未完成的任务。
             </p>
-            <p>登录可能让手机 APP 退出。登录态失效时任务会暂停，需要你重新验证。</p>
+            <p>登录可能让手机 APP 退出。登录态失效时任务会暂停，需要你重新登录。</p>
             <p>
-              在“我的任务”可暂停、恢复或补跑。退出网站会保留自动任务设置；删除托管数据会停止后续任务。
+              在“我的任务”可暂停、恢复或补跑。退出登录会暂停当前账号任务并保留记录；删除托管数据会停止后续任务。
             </p>
             {error && (
               <p role="alert" className="text-destructive">

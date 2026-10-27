@@ -58,4 +58,4 @@ export function nextRunAt(now = Date.now()) {
   return today > now ? today : today + 86400_000;
 }
 export const publicReasons = { upstream: '小黑盒接口暂时不可用', timeout: '本次执行超时',
-  auth_expired: '小黑盒登录已失效，请重新验证', cancelled: '任务已停止', cross_day: '已跨日，等待今天的任务' };
+  auth_expired: '小黑盒登录已失效，请重新登录', cancelled: '任务已停止', cross_day: '已跨日，等待今天的任务' };

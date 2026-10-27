@@ -324,6 +324,23 @@ test("rate limit admission is atomic and resets only after its window", async ()
     f.close();
   }
 });
+test("quota state reads preserve the original reset deadline and never consume an attempt", async () => {
+  const f = fixture();
+  try {
+    assert.deepEqual(await f.store.quotaStates(["phone", "ip"]), []);
+    assert.equal(await f.store.quota("phone", 1, 60_000), true);
+    const [first] = await f.store.quotaStates(["phone", "ip"]);
+    assert.equal(first.count, 1);
+    f.advance(10_000);
+    assert.equal(await f.store.quota("phone", 1, 60_000), false);
+    assert.deepEqual(await f.store.quotaStates(["phone"]), [first]);
+    assert.equal(first.retryAt - f.store.now(), 50_000);
+    f.advance(50_000);
+    assert.deepEqual(await f.store.quotaStates(["phone"]), []);
+  } finally {
+    f.close();
+  }
+});
 test("retries preserve rewards already confirmed by a partially completed attempt", async () => {
   const f = fixture();
   try {
@@ -443,6 +460,23 @@ test("only an accepted task result can refresh its account profile", async () =>
       true,
     );
     assert.equal((await f.store.dashboard(id))?.nickname, "当前昵称");
+  } finally {
+    f.close();
+  }
+});
+
+test("public count deduplicates accounts and includes paused/expired hosting until deletion", async () => {
+  const f = fixture();
+  try {
+    assert.equal(await f.store.accountCount(), 0);
+    const a = await f.store.enroll(credential("123"));
+    await f.store.enroll(credential("123"));
+    const b = await f.store.enroll(credential("456"));
+    await f.store.setEnabled(a, false);
+    f.db.prepare("UPDATE hosting SET credential_state='expired' WHERE user_id=?").run(b);
+    assert.equal(await f.store.accountCount(), 2);
+    await f.store.deleteUser(a);
+    assert.equal(await f.store.accountCount(), 1);
   } finally {
     f.close();
   }
