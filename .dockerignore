@@ -3,6 +3,7 @@
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !tsconfig.json
+!patches/**
 !src/**
 !apps/web/package.json
 !apps/runner/package.json

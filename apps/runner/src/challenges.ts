@@ -14,6 +14,7 @@ interface Options {
   verify: (config: Config, phone: string, code: string, proof?: CaptchaProof) => Promise<LoginStep>;
   now?: () => number;
 }
+const maxActiveOperations = 4;
 export class ChallengeStore {
   private readonly pending = new Map<string, Challenge>();
   private readonly options: Options;
@@ -27,7 +28,7 @@ export class ChallengeStore {
     const value = this.pending.get(id);
     if (!value || value.binding !== binding) throw new Error('登录挑战无效或已过期，请重新获取验证码');
     if (value.busy) throw new Error('验证处理中，请稍候');
-    if (this.active >= 2) throw new Error('登录繁忙，请稍后再试');
+    if (this.active >= maxActiveOperations) throw new Error('登录繁忙，请稍后再试');
     return value;
   }
   private progress(id: string, value: Challenge): LoginProgress {
@@ -52,7 +53,7 @@ export class ChallengeStore {
   }
   async begin(phone: string, binding: string): Promise<LoginProgress> {
     this.cleanup();
-    if (this.active >= 2 || this.pending.size >= 100) throw new Error('登录繁忙，请稍后再试');
+    if (this.active >= maxActiveOperations || this.pending.size >= 100) throw new Error('登录繁忙，请稍后再试');
     this.active++;
     try {
       const normalized = normalizePhone(phone);

@@ -1,0 +1,10 @@
+diff --git a/base.d.ts b/base.d.ts
+index 1edc8c3d1619ee082195416e59080fde78edb734..ba9be140b759251932ca38be3cdf004c0e014419 100644
+--- a/base.d.ts
++++ b/base.d.ts
+@@ -194,2 +194,4 @@ declare module "jsdom" {
+-    interface DOMWindow extends Omit<Window, "top" | "self" | "window"> {
++    // TypeScript 7 treats Infinity and NaN as numeric index keys. DOMWindow's
++    // dynamic property index already covers frames without that conflicting index.
++    interface DOMWindow extends Omit<Window, "top" | "self" | "window" | number> {
+         [key: string]: any;

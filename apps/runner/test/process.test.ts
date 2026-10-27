@@ -41,20 +41,21 @@ test('child login failures log their action and concrete diagnostics without exp
 test('device-token diagnostics survive the child boundary without attempting SMS', async t => {
   const lines: string[] = [];
   t.mock.method(console, 'warn', (message: string) => lines.push(message));
-  const previous = process.env.CHROMIUM_PATH;
-  process.env.CHROMIUM_PATH = '/nonexistent-heybox-test-chromium';
+  const previous = process.env.NODE_OPTIONS;
+  const stub = `globalThis.fetch = async () => { throw new Error('SDK download unavailable'); };`;
+  process.env.NODE_OPTIONS = `${previous || ''} --import=data:text/javascript,${encodeURIComponent(stub)}`;
   try {
     await assert.rejects(runChild({ action: 'begin', phone: '13800138000' }));
   } finally {
-    if (previous === undefined) delete process.env.CHROMIUM_PATH;
-    else process.env.CHROMIUM_PATH = previous;
+    if (previous === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previous;
   }
   assert.equal(lines.length, 1);
   const log = JSON.parse(lines[0]);
   assert.equal(log.action, 'begin');
   assert.equal(log.category, 'device_token');
-  assert.equal(log.diagnostic.stage, 'executable');
-  assert.match(log.diagnostic.message, /需要 Chromium/);
+  assert.equal(log.diagnostic.stage, 'download_sdk');
+  assert.match(log.diagnostic.cause.message, /SDK download unavailable/);
   assert.ok(!lines[0].includes('13800138000'));
 });
 test('the login server requires service authentication before parsing or calling upstream', async () => {

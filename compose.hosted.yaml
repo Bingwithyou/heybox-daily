@@ -11,7 +11,7 @@ services:
       - "127.0.0.1:8788:8788"
     tmpfs:
       - /tmp:exec,size=1g
-    mem_limit: 2g
+    mem_limit: 4g
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true

@@ -88,6 +88,7 @@ cp apps/runner/.env.example private/runner.env
 - `WEBSITE_URL`：网站 HTTPS 地址。
 - `RUNNER_SERVICE_TOKEN`：用 `openssl rand -hex 32` 生成，与 Worker 的同名密钥一致。
 - `CREDENTIAL_KEY`：用 `openssl rand -base64 32` 生成，只放在 VPS，用于 AES-256-GCM 加密。
+- `RUNNER_EGRESS_IP`：可选，填入已核实的服务器公网出口 IPv4 或 IPv6；更换 NAT、代理或出口后同步更新。日志标记为配置值，程序不会自动探测；未配置或格式无效时记为 `unknown`。
 
 另建 `private/tunnel.env`，内容为 `TUNNEL_TOKEN=你的连接令牌`。将两个文件权限设为 `600`，不要提交或打印到日志。
 
@@ -95,7 +96,13 @@ cp apps/runner/.env.example private/runner.env
 docker compose -p heybox-hosted -f compose.hosted.yaml --profile tunnel up -d --build
 ```
 
-runner 只监听主机回环地址；cloudflared 不开放额外入站端口。登录操作合计最多两个并发，日常任务逐个执行，登录和任务子进程有硬超时。APP 签名由 TypeScript 在进程内计算，不启动 Java 或 Android 模拟环境；Chromium 仅用于获取登录设备令牌。
+runner 只监听主机回环地址；cloudflared 不开放额外入站端口。登录操作合计最多四个并发，日常任务逐个执行，登录和任务子进程有硬超时。APP 签名由 TypeScript 在进程内计算，设备令牌由 Node.js 和 jsdom 执行经摘要校验的官方 SDK 获取，不启动 Java、Android 模拟环境或 Chromium。浏览器指纹在每次新登录时生成一次并在初始化后释放，数据库继续只保存原有登录配置；后续任务沿用设备 ID 和令牌。
+
+登录的每个执行步骤记录一条结果日志：`runner_operation_completed` 或 `runner_operation_failed`。`outcome` 区分短信已发送（`sent`）、等待人机验证（`captcha`）、已登录（`authenticated`）和失败（`failed`）；`captcha` 不表示短信已发送。日志包含独立的 `operationId`、开始时间、耗时、是否携带人机验证凭据，以及 `phoneRef`、`deviceRef`、`egressIp` / `egressSource`。失败继续保留经过脱敏的上游原因和阶段。
+
+手机号先规范为国际格式，再使用服务令牌做 HMAC；设备 ID 使用独立的 HMAC 前缀。日志不记录手机号、验证码、设备令牌、设备 ID、登录挑战或账号凭据原文。同一手机号的不同写法得到相同 `phoneRef`，同一登录设备的后续步骤得到相同 `deviceRef`；设备尚未生成时没有 `deviceRef`。更换服务令牌会改变这些关联标识，缺少有效令牌时不生成无密钥哈希。
+
+排查上游限流时，在同一时间段和 `egressIp` 下比较不同 `phoneRef` 的结果：少数号码反复失败而其他号码能发送成功，更支持号码或账号相关限制；多个号码集中失败，更支持共享出口或服务级限制。这是相关性证据，上游未返回具体限流维度时不能直接定论；不同出口的对照还需实际存在对应流量。请求取消、设备初始化失败和等待人机验证不计为短信发送成功。
 
 ### 3. 发布网站
 

@@ -100,20 +100,52 @@ test('a rejected SMS code after CAPTCHA returns to code entry without sending an
   assert.equal((await store.verify(start.challenge, '5678', binding)).status, 'authenticated');
 });
 
-test('CAPTCHA continuations share the global two-operation limit with new logins', async () => {
+test('CAPTCHA continuations and verification share the global four-operation limit with new logins', async () => {
   const releases: Array<() => void> = [];
-  const store = new ChallengeStore({ begin: async () => captcha(), send: async () => {
+  const store = new ChallengeStore({ begin: async phone => phone.endsWith('8004') ? sent() : captcha(), send: async () => {
     await new Promise<void>(resolve => releases.push(resolve)); return sent();
-  }, verify: async () => authenticated() });
+  }, verify: async () => { await new Promise<void>(resolve => releases.push(resolve)); return authenticated(); } });
   const one = await store.begin('13800138000', binding);
   const two = await store.begin('13800138001', binding);
   const three = await store.begin('13800138002', binding);
+  const four = await store.begin('13800138003', binding);
+  const five = await store.begin('13800138004', binding);
   const first = store.completeCaptcha(one.challenge, proof, binding);
   const second = store.completeCaptcha(two.challenge, proof, binding);
-  await assert.rejects(store.completeCaptcha(three.challenge, proof, binding), /繁忙/);
-  await assert.rejects(store.begin('13800138003', binding), /繁忙/);
-  releases.forEach(release => release());
-  await Promise.all([first, second]);
+  const third = store.completeCaptcha(three.challenge, proof, binding);
+  const fourth = store.verify(five.challenge, '1234', binding);
+  try {
+    assert.equal(releases.length, 4);
+    await assert.rejects(store.completeCaptcha(four.challenge, proof, binding), /繁忙/);
+    await assert.rejects(store.begin('13800138005', binding), /繁忙/);
+  } finally {
+    releases.forEach(release => release());
+    await Promise.allSettled([first, second, third, fourth]);
+  }
+  assert.equal((await store.begin('13800138005', binding)).status, 'captcha');
+});
+
+test('four new logins can run together and a failed login releases its operation slot', async () => {
+  const releases: Array<(fail?: boolean) => void> = [];
+  const store = new ChallengeStore({ begin: async () => {
+    await new Promise<void>((resolve, reject) => releases.push(fail => fail ? reject(new Error('upstream unavailable')) : resolve()));
+    return sent();
+  }, send: async () => sent(), verify: async () => authenticated() });
+  const starts = Array.from({ length: 4 }, (_, index) => store.begin(`1380013800${index}`, binding));
+  const observed = Promise.allSettled(starts);
+  try {
+    assert.equal(releases.length, 4);
+    await assert.rejects(store.begin('13800138005', binding), /繁忙/);
+    releases[0](true);
+    await assert.rejects(starts[0], /upstream unavailable/);
+    const retry = store.begin('13800138005', binding);
+    assert.equal(releases.length, 5);
+    releases[4]();
+    assert.equal((await retry).status, 'sent');
+  } finally {
+    releases.forEach(release => release());
+    await observed;
+  }
 });
 
 test('upstream SMS throttling ends the CAPTCHA challenge instead of encouraging another challenge', async () => {

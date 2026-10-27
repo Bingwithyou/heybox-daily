@@ -2,8 +2,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { LoginFailure, loginFailureSchema } from '@heybox/contracts';
 import { errorDiagnostic, type ErrorDiagnostic } from 'heybox-daily/diagnostics';
+import { createLoginLog } from './login-logging.ts';
 
 export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
+  const loginLog = createLoginLog(input);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('./worker.ts', import.meta.url))], {
       stdio: ['pipe', 'pipe', 'ignore'], detached: process.platform !== 'win32',
@@ -18,11 +20,16 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
     const finish = (error?: Error, value?: T) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
+      const context = loginLog?.(value);
       if (error) {
-        console.warn(JSON.stringify({ event: 'runner_operation_failed', action,
+        console.warn(JSON.stringify({ event: 'runner_operation_failed', action, ...context,
+          ...(context && { outcome: 'failed' }),
           category: failure?.category || 'process', diagnostic: failure?.diagnostic || errorDiagnostic(error) }));
         kill(); reject(error);
-      } else resolve(value!);
+      } else {
+        if (context) console.info(JSON.stringify({ event: 'runner_operation_completed', action, ...context }));
+        resolve(value!);
+      }
     };
     const timer = setTimeout(() => finish(new Error('执行超时')), timeout);
     child.on('error', () => finish(new Error('执行进程无法启动')));

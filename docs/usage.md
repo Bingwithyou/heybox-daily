@@ -11,7 +11,7 @@ docker compose build heybox login
 docker compose run --rm login
 ```
 
-按提示输入手机号和验证码，国内手机号默认使用 `+86`，其他号码需包含国家或地区区号。程序会在临时 Chromium 中通过官网获取设备令牌，短信登录后读取任务接口核验账号，成功后生成 `private/config.json`。浏览器随后退出，日常任务镜像不包含浏览器。
+按提示输入手机号和验证码，国内手机号默认使用 `+86`，其他号码需包含国家或地区区号。程序通过 Node.js 和 jsdom 执行官方 SDK，每次新登录生成一次浏览器指纹并获取设备令牌，短信登录后读取任务接口核验账号，成功后生成 `private/config.json`。后续任务沿用已保存的设备和令牌，不重新生成指纹；无需安装浏览器。
 
 验证码输错后可以在同一会话内重输，最多提交三次，直接回车可取消。程序不会自动重发短信。登录失败时原配置会保留；验证码过期、发送频率限制等情况会直接停止。
 
@@ -84,7 +84,7 @@ docker compose run --rm heybox check
 
 ## 开发
 
-业务代码使用 TypeScript 和 Node.js 24，通过 pnpm 管理依赖、编译和测试。APP 和 Web 签名均由 TypeScript 计算，登录使用 Playwright Core 和 Chromium。首次使用时安装项目固定的 pnpm 版本：
+业务代码使用 TypeScript 和 Node.js 24，通过 pnpm 管理依赖、编译和测试。APP 和 Web 签名均由 TypeScript 计算，登录使用 jsdom 和 fingerprint-generator。首次使用时安装项目固定的 pnpm 版本：
 
 ```bash
 npm install --global pnpm@12.15.0
@@ -101,7 +101,9 @@ pnpm check
 
 `pnpm build` 将业务代码和类型声明生成到 `dist/`。`pnpm typecheck` 先构建业务代码，再检查测试的类型；`pnpm test` 完成这两步后，用 Node.js 24 运行 `test/*.test.ts`。测试仍调用编译后的业务代码。
 
-Docker 镜像在构建时完成编译，服务器不需要额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，使用 `node dist/cli.js login`，并通过 `CHROMIUM_PATH` 指定 Chromium 可执行文件。
+Docker 镜像在构建时完成编译，服务器不需要额外安装 pnpm、Java 或浏览器。直接在本机调试登录时，安装项目依赖后使用 `node dist/cli.js login`。
+
+设备令牌 SDK 从官方地址下载，执行前校验已验证版本的 SHA-256。若提示组件已更新，需由维护者重新核验官网 SDK 并更新程序；已有登录配置和日常任务不受影响。随机指纹不保证减少人机验证或上游限流。
 
 CI 使用固定版本的 24 组原生测试向量验证 TypeScript 签名，并在禁用网络、未挂载账号配置的容器中确认签名不依赖 Java 或 Android 资源。
 

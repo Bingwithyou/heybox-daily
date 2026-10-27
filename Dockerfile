@@ -2,6 +2,7 @@ FROM node:24-bookworm-slim AS app
 WORKDIR /build
 RUN npm install --global pnpm@12.15.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+COPY patches ./patches
 COPY apps/web/package.json ./apps/web/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
@@ -25,11 +26,8 @@ COPY --from=app /build/dist ./dist
 COPY third-party/*-LICENSE ./third-party/
 COPY LICENSE NOTICE.md ./
 FROM base AS login
-RUN apt-get update && apt-get install -y --no-install-recommends chromium \
-    && rm -rf /var/lib/apt/lists/*
 COPY --from=runtime /app /app
 COPY --from=app /build/node_modules ./node_modules
-ENV CHROMIUM_PATH=/usr/bin/chromium XDG_CONFIG_HOME=/tmp/chromium-config XDG_CACHE_HOME=/tmp/chromium-cache
 CMD ["login"]
 
 FROM login AS runner

@@ -11,3 +11,5 @@ minimumReleaseAgeExclude:
 allowBuilds:
   esbuild: true
   workerd: true
+patchedDependencies:
+  '@types/jsdom@27.0.0': patches/@types__jsdom@27.0.0.patch
