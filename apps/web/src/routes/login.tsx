@@ -199,10 +199,9 @@ function Login() {
           </Button>
         )}
       </form>
-      <div className="mt-6 space-y-2 text-center text-sm leading-6 text-muted-foreground">
-        <p>我们会加密保存登录态，用于每日签到和任务。</p>
-        <p>登录可能导致手机 APP 退出，登录态失效后需重新验证。</p>
-      </div>
+      <p className="mt-6 text-center text-sm leading-6 text-muted-foreground">
+        登录可能导致手机 APP 账号退出，手机重新登录一次即可，网站还是可以正常运行
+      </p>
     </section>
   );
 }
