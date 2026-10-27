@@ -4,6 +4,7 @@ import { Menu } from "@base-ui/react/menu";
 import { Check, ChevronDown, Plus } from "lucide-react";
 import { Button } from "./ui/button";
 import { Modal } from "./dialog";
+import { AccountAvatar } from "./account-avatar";
 import { authRequest } from "../lib/client";
 import { readAccounts, type Account } from "../lib/accounts";
 export type { Account } from "../lib/accounts";
@@ -18,7 +19,6 @@ export const useAccount = () => useContext(AccountContext);
 
 export function Layout({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<Account | null>(null);
-  const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
   const [info, setInfo] = useState<"privacy" | "help" | "delete" | "logout" | null>(null);
   const [actionAccount, setActionAccount] = useState<Account | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -148,24 +148,7 @@ export function Layout({ children }: { children: ReactNode }) {
                       />
                     }
                   >
-                    {account?.avatar && account?.avatar !== failedAvatar ? (
-                      <img
-                        src={account?.avatar}
-                        alt=""
-                        width={32}
-                        height={32}
-                        referrerPolicy="no-referrer"
-                        className="size-8 shrink-0 rounded-full object-cover"
-                        onError={() => setFailedAvatar(account?.avatar || null)}
-                      />
-                    ) : (
-                      <span
-                        aria-hidden="true"
-                        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm"
-                      >
-                        {(account?.nickname || "盒友").slice(0, 1)}
-                      </span>
-                    )}
+                    <AccountAvatar key={account?.account} account={account} />
                     <span className="min-w-0 truncate">
                       {account?.nickname || (account ? `盒友 ${account.account}` : "选择账号")}
                     </span>
@@ -183,9 +166,7 @@ export function Layout({ children }: { children: ReactNode }) {
                               if (item.account !== account?.account) void switchAccount(item);
                             }}
                           >
-                            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm">
-                              {(item.nickname || "盒友").slice(0, 1)}
-                            </span>
+                            <AccountAvatar account={item} />
                             <span className="min-w-0 flex-1">
                               <span className="block truncate">{item.nickname || "盒友"}</span>
                               <span className="block text-sm text-muted-foreground">
