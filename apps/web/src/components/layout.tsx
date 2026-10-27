@@ -1,14 +1,24 @@
-import { Link, useNavigate } from "@tanstack/react-router";
-import { createContext, useContext, useEffect, useCallback, useState, type ReactNode } from "react";
-import { Menu } from "@base-ui/react/menu";
-import { Check, ChevronDown, Plus } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useCallback,
+  useState,
+  lazy,
+  Suspense,
+  type ReactNode,
+} from "react";
+import { ChevronDown } from "lucide-react";
 import { Button } from "./ui/button";
-import { Modal } from "./dialog";
 import { AccountAvatar } from "./account-avatar";
 import { authRequest } from "../lib/client";
 import { readAccounts, type Account } from "../lib/accounts";
 export type { Account } from "../lib/accounts";
 import { readableError } from "../lib/utils";
+
+const AccountMenu = lazy(() => import("./account-menu"));
+const Modal = lazy(() => import("./dialog").then(({ Modal }) => ({ default: Modal })));
 
 const AccountContext = createContext<{
   account: Account | null;
@@ -25,7 +35,6 @@ export function Layout({ children }: { children: ReactNode }) {
   const [count, setCount] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const navigate = useNavigate();
   const refreshAccounts = useCallback(async () => {
     const value = await readAccounts();
     setAccounts(value.accounts);
@@ -41,25 +50,32 @@ export function Layout({ children }: { children: ReactNode }) {
   }, [refreshAccounts]);
   useEffect(() => {
     let disposed = false;
+    let pending = false;
     const refresh = async () => {
+      if (document.visibilityState !== "visible" || pending) return;
+      pending = true;
       try {
-        const response = await fetch("/api/stats", { cache: "reload" });
+        const response = await fetch("/api/stats");
         if (!response.ok) return;
         const value = (await response.json()) as { accounts: number };
         if (!disposed) setCount(value.accounts);
       } catch {
         /* Keep the last known count during a network interruption. */
+      } finally {
+        pending = false;
       }
     };
     void refresh();
     const timer = window.setInterval(() => {
       void refresh();
     }, 300_000);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       disposed = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
     };
-  }, [account?.account]);
+  }, []);
   async function switchAccount(target: Account) {
     setBusy(true);
     try {
@@ -126,100 +142,30 @@ export function Layout({ children }: { children: ReactNode }) {
                 赞助
               </Link>
               {account || accounts.length ? (
-                <Menu.Root>
-                  <Menu.Trigger
-                    aria-label="账号菜单"
-                    render={
-                      <Button
-                        variant="ghost"
-                        className="h-11 min-w-0 max-w-44 shrink gap-2.5 px-2 text-base"
-                      />
-                    }
-                  >
-                    <AccountAvatar key={account?.account} account={account} />
-                    <span className="min-w-0 truncate">
-                      {account?.nickname || (account ? `盒友 ${account.account}` : "选择账号")}
-                    </span>
-                    <ChevronDown className="size-4" />
-                  </Menu.Trigger>
-                  <Menu.Portal>
-                    <Menu.Positioner align="end" sideOffset={8} className="z-40">
-                      <Menu.Popup className="w-64 max-w-[calc(100vw-2rem)] rounded-lg border bg-white p-1 shadow-lg outline-none">
-                        <Menu.Item
-                          className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted sm:hidden"
-                          onClick={() => navigate({ to: "/tasks" })}
-                        >
-                          我的任务
-                        </Menu.Item>
-                        {accounts.map((item) => (
-                          <Menu.Item
-                            key={item.account}
-                            disabled={busy}
-                            className="flex items-center gap-3 rounded px-3 py-3 outline-none data-highlighted:bg-muted"
-                            onClick={() => {
-                              if (item.account !== account?.account) void switchAccount(item);
-                            }}
-                          >
-                            <AccountAvatar account={item} />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate">{item.nickname || "盒友"}</span>
-                              <span className="block text-sm text-muted-foreground">
-                                盒友 {item.account}
-                              </span>
-                            </span>
-                            {item.account === account?.account && (
-                              <Check aria-label="当前账号" className="size-4" />
-                            )}
-                          </Menu.Item>
-                        ))}
-                        <Menu.Separator className="my-1 h-px bg-border" />
-                        <Menu.Item
-                          disabled={busy || accounts.length >= 5}
-                          className="flex items-center gap-2 rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted data-disabled:text-muted-foreground"
-                          onClick={() => navigate({ to: "/login", search: {} })}
-                        >
-                          <Plus className="size-4" />
-                          添加账号
-                        </Menu.Item>
-                        {accounts.length >= 5 && (
-                          <p className="px-3 pb-2 text-xs text-muted-foreground">
-                            已登录 5 个账号，请先退出一个账号
-                          </p>
-                        )}
-                        {account && (
-                          <>
-                            <Menu.Item
-                              className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
-                              onClick={() =>
-                                navigate({ to: "/login", search: { account: account.account } })
-                              }
-                            >
-                              重新登录
-                            </Menu.Item>
-                            <Menu.Item
-                              className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted"
-                              disabled={busy}
-                              onClick={() => confirmAction("logout")}
-                            >
-                              退出登录
-                              <span className="mt-1 block text-xs text-muted-foreground">
-                                暂停当前账号的自动任务
-                              </span>
-                            </Menu.Item>
-                            <Menu.Separator className="my-1 h-px bg-border" />
-                            <Menu.Item
-                              className="rounded px-3 py-2.5 text-base text-destructive outline-none data-highlighted:bg-muted"
-                              disabled={busy}
-                              onClick={() => confirmAction("delete")}
-                            >
-                              删除托管数据
-                            </Menu.Item>
-                          </>
-                        )}
-                      </Menu.Popup>
-                    </Menu.Positioner>
-                  </Menu.Portal>
-                </Menu.Root>
+                <Suspense
+                  fallback={
+                    <Button
+                      variant="ghost"
+                      className="h-11 max-w-44 gap-2.5 px-2 text-base"
+                      disabled
+                      aria-label="账号菜单"
+                    >
+                      <AccountAvatar account={account} />
+                      <span className="truncate">
+                        {account?.nickname || account?.account || "选择账号"}
+                      </span>
+                      <ChevronDown className="size-4" />
+                    </Button>
+                  }
+                >
+                  <AccountMenu
+                    account={account}
+                    accounts={accounts}
+                    busy={busy}
+                    onSwitch={switchAccount}
+                    onAction={confirmAction}
+                  />
+                </Suspense>
               ) : (
                 <Link
                   to="/login"
@@ -257,46 +203,54 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </footer>
       </div>
-      <Modal
-        open={info !== null}
-        onOpenChange={(open) => {
-          if (!open && !busy) setInfo(null);
-        }}
-        title={
-          info === "delete" ? "删除托管数据？" : info === "logout" ? "退出当前账号？" : "操作失败"
-        }
-      >
-        {info === "delete" || info === "logout" ? (
-          <>
-            <p className="text-base leading-7 text-muted-foreground">
-              {info === "logout"
-                ? `退出后将暂停「${actionAccount?.nickname || actionAccount?.account}」的自动任务，保留登录态和历史记录。其他账号不受影响。`
-                : `这会删除「${actionAccount?.nickname || actionAccount?.account}」的登录态和任务记录，并退出该账号。其他账号不受影响，已发送的小黑盒请求无法撤回。`}
-            </p>
-            {error && (
-              <p role="alert" className="mt-4 text-sm text-destructive">
+      <Suspense fallback={null}>
+        {info !== null && (
+          <Modal
+            open={info !== null}
+            onOpenChange={(open) => {
+              if (!open && !busy) setInfo(null);
+            }}
+            title={
+              info === "delete"
+                ? "删除托管数据？"
+                : info === "logout"
+                  ? "退出当前账号？"
+                  : "操作失败"
+            }
+          >
+            {info === "delete" || info === "logout" ? (
+              <>
+                <p className="text-base leading-7 text-muted-foreground">
+                  {info === "logout"
+                    ? `退出后将暂停「${actionAccount?.nickname || actionAccount?.account}」的自动任务，保留登录态和历史记录。其他账号不受影响。`
+                    : `这会删除「${actionAccount?.nickname || actionAccount?.account}」的登录态和任务记录，并退出该账号。其他账号不受影响，已发送的小黑盒请求无法撤回。`}
+                </p>
+                {error && (
+                  <p role="alert" className="mt-4 text-sm text-destructive">
+                    {error}
+                  </p>
+                )}
+                <div className="mt-6 flex justify-end gap-3">
+                  <Button variant="outline" disabled={busy} onClick={() => setInfo(null)}>
+                    取消
+                  </Button>
+                  <Button
+                    variant={info === "delete" ? "destructive" : "default"}
+                    disabled={busy}
+                    onClick={() => leave(info === "delete")}
+                  >
+                    {busy ? "正在处理…" : info === "delete" ? "删除数据" : "退出登录"}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p role="alert" className="text-base leading-7 text-destructive">
                 {error}
               </p>
             )}
-            <div className="mt-6 flex justify-end gap-3">
-              <Button variant="outline" disabled={busy} onClick={() => setInfo(null)}>
-                取消
-              </Button>
-              <Button
-                variant={info === "delete" ? "destructive" : "default"}
-                disabled={busy}
-                onClick={() => leave(info === "delete")}
-              >
-                {busy ? "正在处理…" : info === "delete" ? "删除数据" : "退出登录"}
-              </Button>
-            </div>
-          </>
-        ) : (
-          <p role="alert" className="text-base leading-7 text-destructive">
-            {error}
-          </p>
+          </Modal>
         )}
-      </Modal>
+      </Suspense>
     </AccountContext.Provider>
   );
 }

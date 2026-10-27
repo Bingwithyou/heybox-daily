@@ -5,6 +5,7 @@ import type { Env } from "./env.ts";
 import { router } from "./rpc.ts";
 import { boundedBody, sameOrigin, serviceAuthorized } from "./security.ts";
 import { Store } from "./store.ts";
+import { publicStats } from "./stats.ts";
 
 const rpc = new RPCHandler(router);
 const authPaths = new Set([
@@ -17,7 +18,11 @@ const authPaths = new Set([
   "/api/auth/heybox/logout",
   "/api/auth/heybox/delete",
 ]);
-export async function api(request: Request, env: Env): Promise<Response | null> {
+export async function api(
+  request: Request,
+  env: Env,
+  execution: Pick<ExecutionContext, "waitUntil">,
+): Promise<Response | null> {
   const path = new URL(request.url).pathname;
   if (!path.startsWith("/api/") && !path.startsWith("/rpc/") && !path.startsWith("/internal/"))
     return null;
@@ -30,12 +35,7 @@ export async function api(request: Request, env: Env): Promise<Response | null> 
     return Response.json({ message: "服务尚未配置完成" }, { status: 503 });
   }
   if (path === "/api/stats" && request.method === "GET") {
-    return Response.json(
-      { accounts: await new Store(env.DB).accountCount() },
-      {
-        headers: { "Cache-Control": "public, max-age=300" },
-      },
-    );
+    return publicStats(request, env, execution);
   }
   if (path.startsWith("/internal/")) {
     if (!(await serviceAuthorized(request, env.RUNNER_SERVICE_TOKEN)))
@@ -88,8 +88,11 @@ export async function api(request: Request, env: Env): Promise<Response | null> 
   }
   if (path.startsWith("/api/auth/")) {
     if (!authPaths.has(path)) return new Response(null, { status: 404 });
-    return createAuth(env).handler(request);
+    return createAuth(env, execution).handler(request);
   }
-  const result = await rpc.handle(request, { prefix: "/rpc", context: { env, request } });
+  const result = await rpc.handle(request, {
+    prefix: "/rpc",
+    context: { env, request, execution },
+  });
   return result.matched ? result.response : new Response(null, { status: 404 });
 }

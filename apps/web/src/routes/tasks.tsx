@@ -8,6 +8,7 @@ import { useAccount } from "../components/layout";
 import { client } from "../lib/client";
 import { readAccounts } from "../lib/accounts";
 import { privatePageHead } from "../lib/seo";
+import { createDashboardLoader, type DashboardData } from "../lib/dashboard-loader";
 import { dateTime, readableError, rewardDelta } from "../lib/utils";
 
 export const Route = createFileRoute("/tasks")({
@@ -20,7 +21,6 @@ export const Route = createFileRoute("/tasks")({
   head: () => privatePageHead("我的任务 · Heybox Daily"),
   component: Dashboard,
 });
-type DashboardData = Awaited<ReturnType<typeof client.dashboard>>;
 const statusNames: Record<string, string> = {
   queued: "等待执行",
   running: "正在执行",
@@ -35,30 +35,41 @@ function Dashboard() {
   const [busy, setBusy] = useState(false);
   const { account, setAccount } = useAccount();
   const requestId = useRef(0);
+  const [loader] = useState(() =>
+    createDashboardLoader((includeHistory) => client.dashboard({ includeHistory })),
+  );
   const navigate = useNavigate();
-  const refresh = useCallback(async () => {
-    const id = ++requestId.current;
-    try {
-      const value = await client.dashboard();
-      if (id !== requestId.current) return;
-      setData(value);
-      setAccount(value);
-      setError("");
-    } catch (e) {
-      if (id !== requestId.current) return;
-      if (e && typeof e === "object" && "code" in e && e.code === "UNAUTHORIZED") {
-        setAccount(null);
-        await navigate({ to: "/login", replace: true });
-      } else setError(readableError(e));
-    }
-  }, [navigate, setAccount]);
+  const refresh = useCallback(
+    async (full = false) => {
+      const id = ++requestId.current;
+      try {
+        const value = await loader.load(full);
+        if (id !== requestId.current) return;
+        setData(value);
+        setAccount(value);
+        setError("");
+      } catch (e) {
+        if (id !== requestId.current) return;
+        if (e && typeof e === "object" && "code" in e && e.code === "UNAUTHORIZED") {
+          setAccount(null);
+          await navigate({ to: "/login", replace: true });
+        } else setError(readableError(e));
+      }
+    },
+    [navigate, setAccount, loader],
+  );
   const polling = data?.today?.status === "running" || data?.today?.status === "queued";
   useEffect(() => {
     void refresh();
+    const focus = () => {
+      void refresh();
+    };
+    window.addEventListener("focus", focus);
     return () => {
       requestId.current++;
+      window.removeEventListener("focus", focus);
     };
-  }, [refresh, account?.account]);
+  }, [refresh]);
   useEffect(() => {
     const timer = window.setInterval(
       () => {
@@ -73,7 +84,7 @@ function Dashboard() {
     setError("");
     try {
       await action();
-      await refresh();
+      await refresh(true);
     } catch (e) {
       setError(readableError(e));
     } finally {
@@ -87,7 +98,7 @@ function Dashboard() {
           {error || "正在读取任务…"}
         </p>
         {error && (
-          <Button className="mt-4" variant="outline" onClick={refresh}>
+          <Button className="mt-4" variant="outline" onClick={() => refresh(true)}>
             重新加载
           </Button>
         )}

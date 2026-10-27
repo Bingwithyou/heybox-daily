@@ -324,7 +324,8 @@ export class Store {
   async deleteUser(userId: string) {
     await this.sql("DELETE FROM user WHERE id=?", userId).run();
   }
-  async dashboard(userId: string) {
+  async dashboard(userId: string, includeHistory = true) {
+    const today = beijingDate(this.now());
     const [settings, rows] = await Promise.all([
       this.sql(
         `SELECT h.heybox_id AS account,h.enabled,h.credential_state AS credentialState,u.name AS nickname,u.image AS avatar
@@ -338,8 +339,11 @@ export class Store {
         avatar: string | null;
       }>(),
       this.sql(
-        "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? ORDER BY date DESC LIMIT 15",
+        includeHistory
+          ? "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? ORDER BY date DESC LIMIT 15"
+          : "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? AND date=? LIMIT 1",
         userId,
+        ...(includeHistory ? [] : [today]),
       ).all<JobRow>(),
     ]);
     if (!settings) return null;
@@ -358,8 +362,8 @@ export class Store {
       enabled: !!settings.enabled,
       credentialState: settings.credentialState,
       nextRunAt: settings.enabled ? nextRunAt(this.now()) : null,
-      today: history.find((row) => row.date === beijingDate(this.now())) || null,
-      history,
+      today: history.find((row) => row.date === today) || null,
+      history: includeHistory ? history : [],
     };
   }
   async quotaStates(keys: string[]) {

@@ -481,3 +481,24 @@ test("public count deduplicates accounts and includes paused/expired hosting unt
     f.close();
   }
 });
+
+test("light dashboard reads only today's job and preserves the full response by default", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    f.advance(86400_000);
+    await f.store.schedule();
+    const full = (await f.store.dashboard(id))!;
+    assert.equal(full.history.length, 2);
+    f.queries.length = 0;
+    const light = (await f.store.dashboard(id, false))!;
+    assert.deepEqual(light, { ...full, history: [] });
+    const jobsQuery = f.queries.find(({ sql }) => sql.includes("FROM jobs"))!;
+    assert.match(jobsQuery.sql, /user_id=\? AND date=\?/);
+    assert.equal(f.queries.length, 2);
+    f.advance(86400_000);
+    assert.equal((await f.store.dashboard(id, false))?.today, null);
+  } finally {
+    f.close();
+  }
+});

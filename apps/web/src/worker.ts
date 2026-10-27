@@ -6,14 +6,14 @@ import { crawlerDocument, shouldNoindex } from "./server/seo.ts";
 import { pageAccess } from "./server/page-access.ts";
 
 export default {
-  async fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: Env, context: ExecutionContext) {
     const started = performance.now();
     let response: Response;
     try {
       response =
         crawlerDocument(request) ||
-        (await pageAccess(request, env)) ||
-        (await api(request, env)) ||
+        (await pageAccess(request, env, context)) ||
+        (await api(request, env, context)) ||
         (await start.fetch(request));
     } catch {
       response = Response.json({ message: "服务暂时不可用，请稍后重试" }, { status: 503 });

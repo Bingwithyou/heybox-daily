@@ -7,7 +7,6 @@ import type { router } from "../src/server/rpc.ts";
 import { jobSchema, taskIds } from "@heybox/contracts";
 import { decryptCredential } from "../../runner/src/crypto.ts";
 import { smsCooldownSchema, type LoginLimitRule } from "../src/lib/login-cooldown.ts";
-
 import { verifySeo } from "./seo-integration.ts";
 
 const base = process.env.TEST_SITE_URL || "http://localhost:3000";
@@ -216,6 +215,8 @@ assert.equal(new URL(entry.headers.get("location")!, base).pathname, "/tasks");
 const taskPage = await a.fetch(`${base}/tasks`, { redirect: "manual" });
 assert.equal(taskPage.status, 200);
 assert.match(taskPage.headers.get("x-robots-tag") || "", /noindex/);
+assert.deepEqual(await a.rpc.dashboard({ includeHistory: false }), { ...first, history: [] });
+assert.deepEqual(await b.rpc.dashboard({ includeHistory: false }), { ...second, history: [] });
 assert.notEqual(first.account, second.account);
 assert.equal(first.nickname, "测试盒友");
 assert.equal(first.avatar, null);
@@ -406,14 +407,22 @@ const device = new Browser();
 await addOnDevice(device, "13200081001");
 const observer = new Browser();
 await login(observer, "13300081001");
-assert.equal(await stats(), countBefore + 1, "two sessions of one account are counted once");
+assert.equal(
+  await stats(),
+  countBefore,
+  "public statistics stay cached during the five-minute TTL",
+);
 // An old pre-upgrade primary session can still be listed and preserved when adding another.
 for (const key of device.cookies.keys()) if (key.includes("_multi-")) device.cookies.delete(key);
 assert.equal((await accountList(device)).accounts.length, 1);
 await addOnDevice(device, "13200081002");
 assert.equal((await accountList(device)).accounts.length, 2);
 assert.equal((await device.rpc.dashboard()).account, "81002");
-assert.equal(await stats(device), countBefore + 2, "authenticated users see the same public count");
+assert.equal(
+  await stats(device),
+  countBefore,
+  "authenticated users share the same cached public count",
+);
 assert.equal((await guest.auth("heybox/switch", { account: "81001" })).status, 401);
 const forged = new Browser();
 for (const [name, value] of device.cookies) {
@@ -454,7 +463,7 @@ assert.equal((await revoked.auth("heybox/switch", { account: "81001" })).status,
 const expiredTaskPage = await revoked.fetch(`${base}/tasks`, { redirect: "manual" });
 assert.equal(expiredTaskPage.status, 302);
 assert.equal(new URL(expiredTaskPage.headers.get("location")!, base).pathname, "/login");
-assert.equal(await stats(), countBefore + 2, "logout retains the hosting record");
+assert.equal(await stats(), countBefore, "logout does not bypass the public cache");
 await addOnDevice(device, "13400081001");
 assert.equal((await observer.rpc.dashboard()).enabled, true, "logging back in resumes the account");
 // A successful upstream login for a different account must not change hosting or the active account.
@@ -471,13 +480,13 @@ const mismatch = await device.auth("heybox/verify-code", {
 assert.equal(mismatch.status, 400);
 assert.match(await mismatch.text(), /账号不一致/);
 assert.equal((await device.rpc.dashboard()).account, "81001");
-assert.equal(await stats(), countBefore + 2);
+assert.equal(await stats(), countBefore);
 for (const account of ["81003", "81004", "81005"]) await addOnDevice(device, `132000${account}`);
 assert.equal((await accountList(device)).accounts.length, 5);
 const full = await device.auth("heybox/send-code", { phone: "13200081006" });
 assert.equal(full.status, 400);
 assert.match(await full.text(), /5 个账号/);
-assert.equal(await stats(), countBefore + 5);
+assert.equal(await stats(), countBefore);
 assert.equal((await device.auth("heybox/switch", { account: "81001" })).status, 200);
 const reauthStart = await device.auth("heybox/send-code", {
   phone: "13500081001",
@@ -494,7 +503,7 @@ assert.equal(
   5,
   "relogin at the limit replaces the existing session",
 );
-assert.equal(await stats(), countBefore + 5);
+assert.equal(await stats(), countBefore);
 // Deletion from another browser invalidates all sessions of that account, not other accounts.
 assert.equal(
   (await observer.auth("heybox/delete", { expectedAccount: "81001", confirm: true })).status,
@@ -505,7 +514,7 @@ assert.equal((await accountList(device)).accounts.length, 4);
 assert.equal((await device.auth("heybox/switch", { account: "81001" })).status, 401);
 assert.equal((await device.auth("heybox/switch", { account: "81002" })).status, 200);
 assert.equal((await device.rpc.dashboard()).enabled, true);
-assert.equal(await stats(), countBefore + 4);
+assert.equal(await stats(), countBefore);
 for (const account of ["81002", "81003", "81004", "81005"]) {
   assert.equal((await device.auth("heybox/switch", { account })).status, 200);
   assert.equal(

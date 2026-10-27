@@ -24,7 +24,7 @@ import * as schema from "./schema.ts";
 import { Store } from "./store.ts";
 import type { Env } from "./env.ts";
 import { privateKey, runnerRequest } from "./security.ts";
-import { notifyRunner } from "./notify.ts";
+import { notifyRunnerInBackground } from "./notify.ts";
 import {
   loginLimitMessages,
   type LoginLimitRule,
@@ -37,7 +37,7 @@ function logRateLimit(rule: LoginLimitRule, limit: number, windowMs: number) {
   );
 }
 
-export function createAuth(env: Env) {
+export function createAuth(env: Env, execution: Pick<ExecutionContext, "waitUntil">) {
   const store = new Store(env.DB);
   const cookie =
     new URL(env.SITE_URL).protocol === "https:" ? "__Host-heybox-challenge" : "heybox-challenge";
@@ -166,7 +166,7 @@ export function createAuth(env: Env) {
       path: "/",
       maxAge: 0,
     });
-    await notifyRunner(env);
+    notifyRunnerInBackground(env, execution);
     return ctx.json({
       status: "authenticated",
       account: result.credential.account,

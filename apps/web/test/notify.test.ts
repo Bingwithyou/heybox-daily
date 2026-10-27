@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { notifyRunner } from "../src/server/notify.ts";
+import { notifyRunner, notifyRunnerInBackground } from "../src/server/notify.ts";
 import type { Env } from "../src/server/env.ts";
 
 const env = { RUNNER_URL: "https://runner.invalid", RUNNER_SERVICE_TOKEN: "a".repeat(64) } as Env;
@@ -21,6 +21,29 @@ test("task notifications use existing service authentication, no account data an
   };
   try {
     assert.equal(await notifyRunner(env), true);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a slow wakeup is retained by waitUntil without blocking the request", async () => {
+  const original = globalThis.fetch;
+  let complete!: (response: Response) => void;
+  const request = new Promise<Response>((resolve) => {
+    complete = resolve;
+  });
+  globalThis.fetch = () => request;
+  const pending: Promise<unknown>[] = [];
+  try {
+    const result = notifyRunnerInBackground(env, {
+      waitUntil: (work) => {
+        pending.push(work);
+      },
+    });
+    assert.equal(result, undefined);
+    assert.equal(pending.length, 1);
+    complete(new Response(null, { status: 204 }));
+    assert.equal(await pending[0], true);
   } finally {
     globalThis.fetch = original;
   }

@@ -1,5 +1,9 @@
 import type { Env } from "./env.ts";
 
+export function notifyRunnerInBackground(env: Env, execution: Pick<ExecutionContext, "waitUntil">) {
+  execution.waitUntil(notifyRunner(env));
+}
+
 export async function notifyRunner(env: Env) {
   try {
     const url = new URL("/tasks/wake", env.RUNNER_URL);
