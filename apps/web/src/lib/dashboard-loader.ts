@@ -7,11 +7,13 @@ const active = (data: DashboardData) => ["queued", "running"].includes(data.toda
 export function createDashboardLoader(
   read: (includeHistory: boolean) => Promise<DashboardData>,
   day = () => beijingDate(),
+  includeHistory = true,
 ) {
   let current: DashboardData | undefined;
   let loadedDay: string | undefined;
   let pending: Promise<DashboardData> | undefined;
   async function refresh(full: boolean) {
+    if (!includeHistory) return read(false);
     const date = day();
     const previous = current;
     full ||= !previous || loadedDay !== date;

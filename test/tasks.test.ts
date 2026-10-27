@@ -19,7 +19,7 @@ function mockClient({ web, ...overrides }: ClientOverrides): TaskClient {
 
 const now = () => Date.parse('2026-10-26T12:00:00Z');
 function result(states = ['finish', 'finish', 'finish']) {
-  return { user: { userid: '12345', level_info: { exp: 100, coin: 200, level: 3, max_exp: 200 } }, task_list: [{ title: '每日任务', tasks: [
+  return { user: { userid: '12345', battery: 10, level_info: { exp: 100, coin: 200, level: 3, max_exp: 200 } }, task_list: [{ title: '每日任务', tasks: [
     { title: '签到', state: 'finish' },
     ...['1', '19', '31'].map((id, i) => ({ title: id, state: states[i], report_extra: { task_id: id } })),
   ] }] };
@@ -48,6 +48,8 @@ test('finished tasks never trigger a sign request or share events', async () => 
   const summary = await runDaily(client, '12345', { now, log: quiet });
   assert.equal(summary.completed, true);
   assert.equal(summary.expDelta, 0);
+  assert.equal(summary.batteryDelta, 0);
+  assert.deepEqual(summary.execution, { sign: 'skipped', '1': 'skipped', '19': 'skipped', '31': 'skipped' });
 });
 test('experience includes the completed level when it resets on level-up', async () => {
   for (const remaining of [0, 25]) {
@@ -119,6 +121,41 @@ test('settlement is read back and already finished tasks stay skipped', async ()
   const summary = await runDaily(client, '12345', { now, log: quiet, sleep: async () => {} });
   assert.equal(summary.completed, true);
   assert.deepEqual(events.map(e => e.path), ['/share/behavior/show', '/share/behavior/tap', '/share/behavior/success']);
+  assert.deepEqual(summary.execution, { sign: 'skipped', '1': 'executed', '19': 'skipped', '31': 'skipped' });
+});
+test('battery gains come from observed balances, not the advertised reward', async () => {
+  let reads = 0;
+  const client = mockClient({ tasks: async () => {
+    const value = result([reads ? 'finish' : 'waiting', 'finish', 'finish']);
+    value.user.battery = reads++ ? 13 : 10;
+    return value;
+  }, signState: async () => state,
+  web: async () => ({ links: [{ link_id: 'article', h_src: 'source' }] }), report: async () => {} });
+  const summary = await runDaily(client, '12345', { now, log: quiet, sleep: async () => {} });
+  assert.equal(summary.batteryDelta, 3);
+  assert.equal(summary.snapshot.battery, 13);
+});
+test('missing or invalid battery balances remain unknown', async () => {
+  for (const battery of [undefined, null, '', 'unknown', -1, 1.5]) {
+    const client = mockClient({ tasks: async () => {
+      const value = result();
+      Object.assign(value.user, { battery });
+      return value;
+    }, signState: async () => state });
+    const summary = await runDaily(client, '12345', { now, log: quiet });
+    assert.equal(summary.snapshot.battery, undefined);
+    assert.equal(summary.batteryDelta, undefined);
+  }
+});
+test('a sign request is recorded as executed even if later work fails', async () => {
+  let signs = 0;
+  const execution: Record<string, string> = {};
+  const client = mockClient({ tasks: async () => result(['waiting', 'finish', 'finish']),
+    signState: async () => signs ? state : { state: 'ok', signed_date: 20751 },
+    sign: async () => { signs++; return state; }, web: async () => { throw new Error('upstream unavailable'); } });
+  await assert.rejects(runDaily(client, '12345', { now, log: quiet, sleep: async () => {},
+    onTask: (id, action) => { execution[id] = action; } }), /upstream unavailable/);
+  assert.deepEqual(execution, { sign: 'executed' });
 });
 test('login/readback errors stop the job immediately', async () => {
   const client = mockClient({ tasks: async () => { throw new Error('登录过期'); }, signState: () => assert.fail() });

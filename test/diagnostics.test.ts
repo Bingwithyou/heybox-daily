@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { errorDiagnostic } from '../dist/diagnostics.js';
 import { HeyboxApiError, HeyboxClient } from '../dist/client.js';
+import { DeviceTokenError } from '../dist/device-token.js';
 
 test('API diagnostics preserve rejection reasons but redact credentials and request parameters', () => {
   const error = new HeyboxApiError('/account/login_code/', 'failed',
@@ -38,4 +39,21 @@ test('diagnostics redact encoded proofs, cookie headers and credentials in neste
   const text = JSON.stringify(errorDiagnostic(error, [proof, '123456']));
   for (const secret of [proof, encodeURIComponent(proof), '123456', 'private-key', 'private-token']) assert.ok(!text.includes(secret));
   assert.match(text, /连接失败/);
+});
+
+test('device-token diagnostics project only bounded numeric error metadata', () => {
+  const valid = new DeviceTokenError('request_token', '设备令牌服务拒绝请求', undefined, {
+    sdkCode: -3, httpStatus: 200, upstreamCode: 1902, requestDurationMs: 35,
+  });
+  assert.deepEqual(errorDiagnostic(valid), {
+    name: 'Error', message: '设备令牌服务拒绝请求', stage: 'request_token',
+    sdkCode: -3, httpStatus: 200, upstreamCode: 1902, requestDurationMs: 35,
+  });
+  const invalid = new DeviceTokenError('sdk_error', '设备令牌服务失败', undefined, {
+    sdkCode: 'private-code', httpStatus: 999, upstreamCode: 13800138000,
+    requestDurationMs: 'private-value', response: { token: 'private-token' },
+  } as never);
+  assert.deepEqual(errorDiagnostic(invalid), {
+    name: 'Error', message: '设备令牌服务失败', stage: 'sdk_error',
+  });
 });

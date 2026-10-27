@@ -27,4 +27,26 @@
     "SITE_URL": "https://heybox.cansiny.top",
     "RUNNER_URL": "https://heybox-runner.cansiny.top",
   },
+  "env": {
+    "staging": {
+      "name": "heybox-daily-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [{ "pattern": "preview.heybox.cansiny.top", "custom_domain": true }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "heybox-daily-staging",
+          "database_id": "4330a4a2-af40-41df-9048-aa2db3c45df0",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "triggers": { "crons": [] },
+      "vars": {
+        "DEPLOYMENT_ENV": "staging",
+        "SITE_URL": "https://preview.heybox.cansiny.top",
+        "RUNNER_URL": "https://heybox-preview-runner.cansiny.top",
+      },
+    },
+  },
 }

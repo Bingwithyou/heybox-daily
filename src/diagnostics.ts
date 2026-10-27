@@ -9,6 +9,10 @@ export interface ErrorDiagnostic {
   endpoint?: string;
   status?: string;
   upstreamMessage?: string;
+  sdkCode?: number;
+  httpStatus?: number;
+  upstreamCode?: number;
+  requestDurationMs?: number;
   cause?: ErrorDiagnostic;
 }
 
@@ -41,7 +45,15 @@ export function errorDiagnostic(error: unknown, secrets: string[] = [], depth = 
     message: safeText(error.message, secrets),
   };
   if ('code' in error && typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)) diagnostic.code = error.code;
-  if (error instanceof DeviceTokenError) diagnostic.stage = error.stage;
+  if (error instanceof DeviceTokenError) {
+    diagnostic.stage = error.stage;
+    const fields = [['sdkCode', -4, -1], ['httpStatus', 0, 599],
+      ['upstreamCode', 0, 999_999], ['requestDurationMs', 0, 120_000]] as const;
+    for (const [key, min, max] of fields) {
+      const value = error.details[key];
+      if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) diagnostic[key] = value;
+    }
+  }
   if (error instanceof HeyboxApiError) {
     diagnostic.endpoint = safeText(error.endpoint.split('?')[0], secrets);
     diagnostic.status = error.status;

@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vp dev --host 127.0.0.1 --port 3000",
     "build": "vp build",
+    "build:staging": "node ../../scripts/deploy-staging.mjs --build-only",
+    "deploy:staging": "node ../../scripts/deploy-staging.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
     "test:integration": "node test/run-integration.ts",

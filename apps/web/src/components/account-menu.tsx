@@ -42,6 +42,12 @@ export default function AccountMenu({
             >
               我的任务
             </Menu.Item>
+            <Menu.Item
+              className="rounded px-3 py-2.5 text-base outline-none data-highlighted:bg-muted sm:hidden"
+              onClick={() => navigate({ to: "/history" })}
+            >
+              历史记录
+            </Menu.Item>
             {accounts.map((item) => (
               <Menu.Item
                 key={item.account}

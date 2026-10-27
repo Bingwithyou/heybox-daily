@@ -36,3 +36,6 @@ COPY --from=app /build/packages/contracts ./packages/contracts
 ENV HOST=0.0.0.0 PORT=8788
 ENTRYPOINT ["node", "apps/runner/src/main.ts"]
 CMD []
+
+FROM runner AS preview-runner
+ENTRYPOINT ["node", "apps/runner/src/preview-main.ts"]

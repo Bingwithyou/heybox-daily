@@ -2,6 +2,7 @@ import {
   beijingDate,
   nextRunAt,
   outcomeSchema,
+  taskIds,
   type Credential,
   type Job,
   type Outcome,
@@ -42,6 +43,22 @@ export class Store {
   }
   private sql(query: string, ...values: unknown[]) {
     return this.db.prepare(query).bind(...values);
+  }
+  async activityCredential(userId: string): Promise<Credential | null> {
+    return this.sql(
+      "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND credential_state='valid'",
+      userId,
+    ).first<Credential>();
+  }
+  async activityAccess(account: string, version: string) {
+    return Boolean(
+      await this.sql(
+        "SELECT user_id FROM hosting WHERE user_id=? AND heybox_id=? AND version=? AND credential_state='valid'",
+        `heybox:${account}`,
+        account,
+        version,
+      ).first(),
+    );
   }
   async enroll(credential: Credential) {
     const id = `heybox:${credential.account}`;
@@ -233,8 +250,26 @@ export class Store {
       version,
     ).first<{ result: string | null }>();
     const old = previous?.result ? outcomeSchema.parse(JSON.parse(previous.result)) : null;
+    const execution =
+      outcome.execution || old?.execution ? { ...old?.execution, ...outcome.execution } : undefined;
+    if (execution) {
+      for (const task of taskIds) {
+        if (old?.execution?.[task] === "executed" || outcome.execution?.[task] === "executed")
+          execution[task] = "executed";
+        else if (
+          (old && old.execution?.[task] !== "skipped") ||
+          outcome.execution?.[task] !== "skipped"
+        )
+          delete execution[task];
+      }
+    }
     const result = {
       ...outcome,
+      execution,
+      batteryDelta:
+        outcome.batteryDelta === undefined || (old !== null && old.batteryDelta === undefined)
+          ? undefined
+          : outcome.batteryDelta + (old?.batteryDelta || 0),
       expDelta:
         outcome.expDelta === undefined || (old !== null && old.expDelta === undefined)
           ? undefined
@@ -364,6 +399,20 @@ export class Store {
       nextRunAt: settings.enabled ? nextRunAt(this.now()) : null,
       today: history.find((row) => row.date === today) || null,
       history: includeHistory ? history : [],
+    };
+  }
+  async history(userId: string) {
+    const dashboard = await this.dashboard(userId);
+    if (!dashboard) return null;
+    return {
+      account: dashboard.account,
+      nickname: dashboard.nickname,
+      avatar: dashboard.avatar,
+      records: dashboard.history.map((row) => ({
+        ...row,
+        taskType: "daily" as const,
+        taskName: "每日任务",
+      })),
     };
   }
   async quotaStates(keys: string[]) {

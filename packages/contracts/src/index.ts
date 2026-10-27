@@ -8,18 +8,55 @@ export const bindingSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const taskIds = ['sign', '1', '19', '31'] as const;
 export const taskNames = { sign: '每日签到', '1': '分享帖子', '19': '分享游戏', '31': '分享游戏评价' };
 export const taskViewSchema = z.object({ id: z.enum(taskIds), state: z.enum(['waiting', 'finish']) });
-export const snapshotSchema = z.object({ tasks: z.array(taskViewSchema).length(4), exp: z.number(), coin: z.number() });
+export const taskExecutionSchema = z.partialRecord(z.enum(taskIds), z.enum(['executed', 'skipped']));
+export const snapshotSchema = z.object({ tasks: z.array(taskViewSchema).length(4), exp: z.number(), coin: z.number(), battery: z.number().int().nonnegative().optional() });
 export type TaskSnapshot = z.infer<typeof snapshotSchema>;
 export const profileSchema = z.object({ nickname: z.string().min(1).max(80).optional(),
   avatar: z.url({ protocol: /^https$/ }).max(2048).optional() });
 export const credentialSchema = z.object({ account: z.string().regex(/^\d{1,20}$/), version: idSchema,
   ciphertext: z.string().min(32).max(8192), profile: profileSchema.optional() });
 export type Credential = z.infer<typeof credentialSchema>;
+export const activityIdSchema = z.string().regex(/^[1-9]\d{0,19}$/);
+export const activityViewSchema = z.object({
+  id: activityIdSchema, name: z.string().min(1).max(240), prizeCount: z.number().int().nonnegative().nullable(),
+  endTime: z.string().max(240).nullable(), joined: z.boolean(), tickets: z.number().int().nonnegative().nullable(),
+  status: z.enum(['available', 'follow_required', 'blocked', 'joined', 'completed', 'ended']),
+  reason: z.string().max(500).optional(),
+  followAccounts: z.array(z.object({ id: activityIdSchema, name: z.string().min(1).max(240) })).max(20),
+});
+export type ActivityView = z.infer<typeof activityViewSchema>;
+export const activityConsentSchema = z.object({ activityId: activityIdSchema, approvedFollowIds: z.array(activityIdSchema).max(20) });
+export const activityRequestSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('list'), credential: credentialSchema }),
+  activityConsentSchema.extend({ mode: z.literal('participate'), credential: credentialSchema }),
+]);
+export type ActivityRequest = z.infer<typeof activityRequestSchema>;
+export const activityResultSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('list'), activities: z.array(activityViewSchema).max(30) }),
+  z.object({ mode: z.literal('participate'), activity: activityViewSchema }),
+]);
+export type ActivityResult = z.infer<typeof activityResultSchema>;
+export const activityAccessSchema = credentialSchema.pick({ account: true, version: true });
+const activityFailureMessages = {
+  activity_blocked: '尚未满足参与条件，请先在小黑盒完成所需任务',
+  activity_changed: '活动条件已变化，请刷新后重新确认关注账号',
+  activity_unconfirmed: '操作结果尚未确认，请刷新活动状态后再试',
+  activity_invalid: '活动信息暂时不可用，请稍后刷新',
+  activity_auth: '小黑盒登录已失效或账号已变化，请重新登录',
+  activity_busy: '当前账号的活动操作正在执行，请稍后刷新',
+  activity_upstream: '小黑盒暂时无法处理此活动，请稍后刷新状态',
+};
+export const activityFailureSchema = z.object({ code: z.enum(Object.keys(activityFailureMessages) as [keyof typeof activityFailureMessages, ...Array<keyof typeof activityFailureMessages>]) });
+export class ActivityFailure extends Error {
+  readonly code: keyof typeof activityFailureMessages;
+  constructor(code: keyof typeof activityFailureMessages) { super(activityFailureMessages[code]); this.code = code; }
+}
 export const jobSchema = z.object({ id: idSchema, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   lease: idSchema, credential: credentialSchema });
 export type Job = z.infer<typeof jobSchema>;
 export const outcomeSchema = z.object({ status: z.enum(['completed', 'failed', 'auth_expired', 'cancelled']),
   snapshot: snapshotSchema.optional(), expDelta: z.number().optional(), coinDelta: z.number().optional(),
+  batteryDelta: z.number().int().optional(), execution: taskExecutionSchema.optional(),
   profile: profileSchema.optional(),
   reason: z.enum(['upstream', 'timeout', 'auth_expired', 'cancelled', 'cross_day']).optional() });
 export type Outcome = z.infer<typeof outcomeSchema>;

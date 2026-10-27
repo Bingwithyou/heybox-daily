@@ -12,3 +12,9 @@
 `src/native-algorithm.ts` 根据上述固定版本的原生实现恢复 APP 签名，使用 `test/fixtures/native-v14.json` 中的离线原生结果验证。原生资源和 `signer/` 仅保留作研究参考，不装入运行镜像，也不参与日常签名；新的 APP 或 shader 版本需要重新验证。
 
 上述 APP 资源的权利属于其原权利人，不属于本项目的 MIT 授权范围。
+
+`apps/web/public/rewards/` 的 EXP、H 币、盒电图标提取自小黑盒[官方 H5 资源包](https://static.max-c.com/static/heybox/webapp/assets/v1/releases/heybox-h5/tools-gacha/046371aea07134a1f6b6bc6184ffd5aa84c60d97/assets/index-CDVKqjv6.js)中的 SVG 路径，仅用于标识对应收益，权利属于原权利人，不属于本项目的 MIT 授权范围：
+
+- `exp.svg`：原始图标名 `exp_filled_24x24`，SHA-256 `a9a5e37231b59f26b7f80a7447fcbb549416e9f36d6cefac99cfd0c28295576e`。
+- `coin.svg`：原始图标名 `wallet_hcoin_filled_24x24`，SHA-256 `cd7b54c94a0306c9cbfaf74349efba23770b564e35a6d466c87e8657d9d0eec7`。
+- `battery.svg`：原始图标名 `bbs_battery_filled_24x24`，SHA-256 `ed316abc213fc3e802304948ad668503bd58e83035055bd733d9810c4828b432`。

@@ -11,6 +11,7 @@ export interface WebSignature { hkey: string; _time: string; nonce: string }
 export interface NativeSignature extends WebSignature { _rnd: string }
 export type Query = Record<string, string>;
 export type ShareId = '1' | '19' | '31';
+export type TaskExecution = Partial<Record<'sign' | ShareId, 'executed' | 'skipped'>>;
 export type ShareAction = 'show' | 'tap' | 'success';
 export type ShareContent =
   | { src: 'link'; link_id: string; h_src: string }
@@ -20,12 +21,14 @@ export interface ShareEvent {
   type: '3' | '4';
   path: string;
   time: string;
-  addition: ShareContent & { plat?: string; h_session_id: string };
+  addition: (ShareContent & { h_session_id: string } | {
+    src: 'web'; act_id: string; web_url: string;
+  }) & { plat?: string };
 }
 
 // API fields stay optional where the existing runtime checks handle missing data.
 export interface TaskListResult {
-  user?: { userid?: string | number; username?: string; avatar?: string; level_info?: { exp?: string | number; coin?: string | number; level?: string | number; max_exp?: string | number } };
+  user?: { userid?: string | number; username?: string; avatar?: string; battery?: string | number; level_info?: { exp?: string | number; coin?: string | number; level?: string | number; max_exp?: string | number } };
   task_list?: Array<{ title?: string; tasks?: Array<{ title?: string; state?: string; report_extra?: { task_id?: string | number } }> }>;
 }
 export interface TaskSnapshot {
@@ -34,6 +37,7 @@ export interface TaskSnapshot {
   level?: number;
   maxExp?: number;
   coin: number;
+  battery?: number;
   profile?: AccountProfile;
 }
 export interface SignState { state?: string; signed_date?: string | number }

@@ -1,5 +1,8 @@
 // Public deployment identity; keep metadata and crawler documents on the same origin.
-export const siteUrl = "https://heybox.cansiny.top";
+import { isPreview } from "./deployment.ts";
+export const siteUrl = isPreview
+  ? "https://preview.heybox.cansiny.top"
+  : "https://heybox.cansiny.top";
 export const repositoryUrl = "https://github.com/Cansiny0320/heybox-daily";
 export const siteDescription =
   "Heybox Daily 是开源的小黑盒自动签到和每日任务工具，支持在线托管、多账号管理和 Docker 自部署。";
@@ -15,7 +18,10 @@ export function publicPageHead(
     meta: [
       { title },
       { name: "description", content: description },
-      { name: "robots", content: "index, follow, max-image-preview:large" },
+      {
+        name: "robots",
+        content: isPreview ? "noindex, nofollow" : "index, follow, max-image-preview:large",
+      },
       { property: "og:type", content: "website" },
       { property: "og:site_name", content: "Heybox Daily" },
       { property: "og:locale", content: "zh_CN" },

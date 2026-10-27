@@ -107,6 +107,8 @@ runner 只监听主机回环地址；cloudflared 不开放额外入站端口。�
 
 登录的每个执行步骤记录一条结果日志：`runner_operation_completed` 或 `runner_operation_failed`。`outcome` 区分短信已发送（`sent`）、等待人机验证（`captcha`）、已登录（`authenticated`）和失败（`failed`）；`captcha` 不表示短信已发送。日志包含独立的 `operationId`、开始时间、耗时、是否携带人机验证凭据，以及 `phoneRef`、`deviceRef`、`egressIp` / `egressSource`。失败继续保留经过脱敏的上游原因和阶段。
 
+设备令牌 SDK 明确失败时立即结束该次初始化，不再统一等待 20 秒。`request_token` 阶段保留数值型 `sdkCode`、`httpStatus`、`upstreamCode` 和 `requestDurationMs`（仅在可取得时）；`sdkCode` 的 `-1`、`-2`、`-3` 分别表示 SDK 报告的连接错误、HTTP 错误和业务拒绝，`-4` 或未知错误归入 `sdk_error`。无响应仍由 `wait_token` 的 20 秒超时兜底，不自动重试；请求体、响应正文、令牌、Cookie 和 URL 查询参数不写入诊断。
+
 手机号先规范为国际格式，再使用服务令牌做 HMAC；设备 ID 使用独立的 HMAC 前缀。日志不记录手机号、验证码、设备令牌、设备 ID、登录挑战或账号凭据原文。同一手机号的不同写法得到相同 `phoneRef`，同一登录设备的后续步骤得到相同 `deviceRef`；设备尚未生成时没有 `deviceRef`。更换服务令牌会改变这些关联标识，缺少有效令牌时不生成无密钥哈希。
 
 排查上游限流时，在同一时间段和 `egressIp` 下比较不同 `phoneRef` 的结果：少数号码反复失败而其他号码能发送成功，更支持号码或账号相关限制；多个号码集中失败，更支持共享出口或服务级限制。这是相关性证据，上游未返回具体限流维度时不能直接定论；不同出口的对照还需实际存在对应流量。请求取消、设备初始化失败和等待人机验证不计为短信发送成功。
@@ -154,6 +156,25 @@ runner 启动后立即检查，队列空闲时每 30 分钟兜底检查一次。
 短暂失败最多自动尝试 3 次，并延迟重试。登录失效会暂停，不会自动发送短信。重新登录会更新凭据版本；旧进程停止或租约到期前，新任务等待，不会接受旧凭据的任务结果。
 
 暂停或删除会阻止后续步骤，已发送的请求不能撤回。退出登录会暂停当前账号任务并撤销该账号在当前浏览器的网站会话，保留登录态和记录，其他账号不受影响；删除托管数据会撤销该账号所有网站会话并删除登录态及记录。任务记录保留 30 天，手机号和验证码不写入数据库，限流键经过 HMAC 处理。
+
+## 预发布演示环境
+
+预发布地址为 `https://preview.heybox.cansiny.top`。使用演示号码 `13900000009`、验证码 `123456` 登录，先点击“获取验证码”；不会发送短信。活动参与、关注和每日奖励均为模拟结果，不访问小黑盒。历史页中的演示记录也不代表真实收益。
+
+网站使用独立 Worker `heybox-daily-staging`、D1 `heybox-daily-staging`、Tunnel `heybox-daily-staging-runner` 和服务密钥。VPS 目录为 `/home/ubuntu/heybox-staging`，Compose 项目名为 `heybox-staging`，不开放宿主端口。预发布关闭 Cron；登录、恢复或重试时才唤醒模拟执行。活动状态保存在模拟 Runner 内存中，重启后恢复初始演示状态。账号 `13900000008` 用于模拟失败路径。
+
+使用 Node.js 24，正常安装依赖后从仓库根目录手动发布：
+
+```bash
+# 构建并核验预发布目标，不上传
+node scripts/deploy-staging.mjs --build-only
+# 构建、核验并发布预发布 Worker
+node scripts/deploy-staging.mjs
+```
+
+脚本显式设置 `CLOUDFLARE_ENV=staging` 和 Vite staging 模式，临时使用空 `.dev.vars.staging`，避免把本地开发密钥写入构建产物；若该文件已存在会停止并保留原文件。发布前核验 Worker、域名、D1 ID、空 Cron 和变量白名单。Worker Secret 通过 Wrangler 单独配置，不写入源码。更新模拟 Runner 时，在上述 VPS 目录运行 `docker compose -p heybox-staging -f compose.staging.yaml up -d --build`；只向该目录同步源码和 `private/staging/runner.env`、`tunnel.env`。
+
+预发布禁止搜索引擎收录。它适合界面与流程验收，不能用来证明真实短信、小黑盒接口或奖励到账正常。需要下线时停止 staging Compose 并移除 staging Worker 域名，保留 D1；不要使用正式环境资源名执行这些操作。
 
 ## 备份、更新与停止
 

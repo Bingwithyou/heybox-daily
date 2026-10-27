@@ -1,5 +1,5 @@
 import { RPCHandler } from "@orpc/server/fetch";
-import { finishSchema, heartbeatSchema } from "@heybox/contracts";
+import { finishSchema, heartbeatSchema, activityAccessSchema } from "@heybox/contracts";
 import { createAuth } from "./auth.ts";
 import type { Env } from "./env.ts";
 import { router } from "./rpc.ts";
@@ -52,6 +52,12 @@ export async function api(
       const raw = await request.text();
       if (raw.length > 16_384) return new Response(null, { status: 413 });
       const body = JSON.parse(raw) as unknown;
+      if (path === "/internal/activities/check") {
+        const value = activityAccessSchema.parse(body);
+        return new Response(null, {
+          status: (await store.activityAccess(value.account, value.version)) ? 204 : 409,
+        });
+      }
       if (path === "/internal/heartbeat") {
         const value = heartbeatSchema.parse(body);
         return new Response(null, {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { shareEvent } from './report.js';
 import { accountProfile } from './profile.js';
-import type { FeedResult, Inspection, ReviewShareResult, ShareContent, ShareId, SignState, TaskClient, TaskListResult, TaskSnapshot } from './types.js';
+import type { FeedResult, Inspection, ReviewShareResult, ShareContent, ShareId, SignState, TaskClient, TaskExecution, TaskListResult, TaskSnapshot } from './types.js';
 
 const shareIds: ShareId[] = ['1', '19', '31'];
 const names = { '1': '分享帖子', '19': '分享游戏', '31': '分享游戏评价' };
@@ -19,7 +19,7 @@ export function snapshot(result: TaskListResult | undefined, account: string): T
   }
   const level = result!.user!.level_info;
   if (!Number.isFinite(Number(level?.exp)) || !Number.isFinite(Number(level?.coin))) throw new Error('任务列表缺少经验或 H 币数据');
-  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin), profile: accountProfile(result!.user),
+  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin), battery: nonnegativeInteger(result!.user!.battery), profile: accountProfile(result!.user),
     level: nonnegativeInteger(level?.level), maxExp: nonnegativeInteger(level?.max_exp, 1) };
 }
 
@@ -81,8 +81,13 @@ export async function inspect(client: Pick<TaskClient, 'tasks' | 'signState'>, a
   return { ...current, signed: signedToday(sign, now()) };
 }
 
-interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot, expDelta: number | undefined) => void }
-export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {} }: RunOptions = {}) {
+interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot, expDelta: number | undefined) => void; onTask?: (id: keyof TaskExecution, action: 'executed' | 'skipped') => void }
+export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {}, onTask = () => {} }: RunOptions = {}) {
+  const execution: TaskExecution = {};
+  const recordTask = (id: keyof TaskExecution, action: 'executed' | 'skipped') => {
+    execution[id] = action;
+    onTask(id, action);
+  };
   await checkpoint();
   const before = await inspect(client, account, now);
   let expDelta: number | undefined = 0;
@@ -96,6 +101,7 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
   };
   if (!before.signed) {
     await checkpoint();
+    recordTask('sign', 'executed');
     await client.sign();
     let verified = false;
     for (const delay of delays) {
@@ -105,15 +111,16 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     if (!verified) throw new Error('签到未确认到账，任务已停止');
     log('签到完成');
     record(snapshot(await client.tasks(), account));
-  } else log('今天已签到');
+  } else { recordTask('sign', 'skipped'); log('今天已签到'); }
 
   for (const id of shareIds) {
     await checkpoint();
-    if (current.tasks.find(task => task.id === id)!.state === 'finish') { log(`${names[id]}已完成，跳过`); continue; }
+    if (current.tasks.find(task => task.id === id)!.state === 'finish') { recordTask(id, 'skipped'); log(`${names[id]}已完成，跳过`); continue; }
     const addition = await selectShare(client, id);
     const sessionId = randomUUID();
     for (const action of ['show', 'tap', 'success'] as const) {
       await checkpoint();
+      if (action === 'show') recordTask(id, 'executed');
       await client.report(shareEvent(action, addition, sessionId, Math.floor(now() / 1000)), sessionId);
       if (action === 'tap') await sleep(2000);
     }
@@ -131,5 +138,7 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
   if (!after.signed || shareIds.some(id => after.tasks.find(task => task.id === id)!.state !== 'finish')) {
     throw new Error('最终状态未通过检查，可能跨日或任务状态已变化');
   }
-  return { completed: true, expDelta, coinDelta: after.coin - before.coin, snapshot: after };
+  return { completed: true, expDelta, coinDelta: after.coin - before.coin,
+    batteryDelta: before.battery === undefined || after.battery === undefined ? undefined : after.battery - before.battery,
+    execution, snapshot: after };
 }

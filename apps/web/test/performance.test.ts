@@ -49,6 +49,21 @@ test("dashboard requests coalesce and polls retain history without fetching it a
   assert.deepEqual(calls, [true, false]);
   assert.equal(poll.history.length, 2);
 });
+test("the daily page only reads today's job, including completion and mutation refreshes", async () => {
+  const calls: boolean[] = [];
+  const loader = createDashboardLoader(
+    async (history) => {
+      calls.push(history);
+      return dashboard(calls.length === 1 ? "running" : "completed");
+    },
+    undefined,
+    false,
+  );
+  await loader.load();
+  await loader.load();
+  await loader.load(true);
+  assert.deepEqual(calls, [false, false, false]);
+});
 
 test("completion, account changes and a new day reload the correct history", async () => {
   for (const change of ["completion", "account", "day"]) {

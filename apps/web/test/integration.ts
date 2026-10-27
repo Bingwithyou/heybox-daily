@@ -72,6 +72,8 @@ const a = new Browser();
 const b = new Browser();
 const guest = new Browser();
 await assert.rejects(guest.rpc.dashboard(), /请先登录/);
+await assert.rejects(guest.rpc.history(), /请先登录/);
+await assert.rejects(guest.rpc.activities({ expectedAccount: "123" }), /请先登录/);
 const humanChallenge = await guest.auth("heybox/send-code", { phone: "13900000000" });
 assert.equal(humanChallenge.status, 400);
 const challengeError = (await humanChallenge.json()) as { code: string; message: string };
@@ -215,6 +217,21 @@ assert.equal(new URL(entry.headers.get("location")!, base).pathname, "/tasks");
 const taskPage = await a.fetch(`${base}/tasks`, { redirect: "manual" });
 assert.equal(taskPage.status, 200);
 assert.match(taskPage.headers.get("x-robots-tag") || "", /noindex/);
+const historyPage = await a.fetch(`${base}/history`, { redirect: "manual" });
+assert.equal(historyPage.status, 200);
+assert.match(historyPage.headers.get("x-robots-tag") || "", /noindex/);
+const firstHistory = await a.rpc.history();
+const secondHistory = await b.rpc.history();
+assert.equal(firstHistory.account, first.account);
+assert.equal(secondHistory.account, second.account);
+assert.deepEqual(
+  firstHistory.records.map((row) => row.id),
+  first.history.map((row) => row.id),
+);
+assert.ok(firstHistory.records.every((row) => row.taskType === "daily"));
+assert.ok(
+  firstHistory.records.every((row) => !secondHistory.records.some((other) => other.id === row.id)),
+);
 assert.deepEqual(await a.rpc.dashboard({ includeHistory: false }), { ...first, history: [] });
 assert.deepEqual(await b.rpc.dashboard({ includeHistory: false }), { ...second, history: [] });
 assert.notEqual(first.account, second.account);
@@ -236,6 +253,55 @@ assert.equal((await b.rpc.dashboard()).account, second.account);
 assert.ok(first.enabled && second.enabled);
 assert.ok(!JSON.stringify(first).includes("ciphertext"));
 assert.ok(!JSON.stringify(first).includes("pkey"));
+const activities = await a.rpc.activities({ expectedAccount: first.account });
+assert.equal(activities.length, 3);
+assert.equal(activities.find((row) => row.id === "9305")?.status, "blocked");
+await assert.rejects(a.rpc.activities({ expectedAccount: second.account }), /账号/);
+await assert.rejects(
+  a.rpc.participateActivity({
+    expectedAccount: first.account,
+    activityId: "9305",
+    approvedFollowIds: [],
+  }),
+  /参与条件/,
+);
+await assert.rejects(
+  a.rpc.participateActivity({
+    expectedAccount: first.account,
+    activityId: "9317",
+    approvedFollowIds: [],
+  }),
+  /条件已变化/,
+);
+const participated = await a.rpc.participateActivity({
+  expectedAccount: first.account,
+  activityId: "9317",
+  approvedFollowIds: ["104298871"],
+});
+assert.equal(participated.tickets, 700);
+assert.equal(participated.status, "completed");
+assert.deepEqual(
+  await a.rpc.participateActivity({
+    expectedAccount: first.account,
+    activityId: "9317",
+    approvedFollowIds: [],
+  }),
+  participated,
+);
+assert.equal(
+  (await b.rpc.activities({ expectedAccount: second.account })).find((row) => row.id === "9317")
+    ?.joined,
+  false,
+);
+assert.ok(!JSON.stringify(activities).includes("ciphertext"));
+assert.ok(!JSON.stringify(activities).includes("pkey"));
+assert.equal(
+  (await fetch(`${base}/internal/activities/check`, { method: "POST", body: "{}" })).status,
+  401,
+);
+console.log(
+  "PASS: activity authentication, game restrictions, explicit follow consent, repeat clicks and account isolation",
+);
 const accounts = new Set([first.account, second.account]);
 for (let count = 0; count < 10 && accounts.size; count++) {
   const response = await internal("claim", {});
@@ -248,6 +314,24 @@ for (let count = 0; count < 10 && accounts.size; count++) {
     job.credential.account,
   );
   assert.equal(
+    (
+      await internal("activities/check", {
+        account: job.credential.account,
+        version: job.credential.version,
+      })
+    ).status,
+    204,
+  );
+  assert.equal(
+    (
+      await internal("activities/check", {
+        account: job.credential.account,
+        version: crypto.randomUUID(),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(
     (await internal("heartbeat", { id: job.id, lease: job.lease, version: job.credential.version }))
       .status,
     204,
@@ -257,6 +341,8 @@ for (let count = 0; count < 10 && accounts.size; count++) {
     snapshot: { exp: 130, coin: 200, tasks: taskIds.map((id) => ({ id, state: "finish" })) },
     expDelta: 130,
     coinDelta: 200,
+    batteryDelta: 2,
+    execution: { sign: "executed", "1": "executed", "19": "skipped", "31": "skipped" },
   };
   assert.equal(
     (
@@ -276,6 +362,8 @@ const emptyQueue = await internal("claim", {});
 assert.equal(await emptyQueue.json(), null);
 assert.equal(emptyQueue.headers.get("retry-after"), "1800");
 assert.equal((await a.rpc.dashboard()).today?.status, "completed");
+assert.equal((await a.rpc.history()).records[0].result?.batteryDelta, 2);
+assert.equal((await a.rpc.history()).records[0].result?.execution?.["19"], "skipped");
 await a.rpc.setEnabled({ expectedAccount: first.account, enabled: false });
 assert.equal((await a.rpc.dashboard()).enabled, false);
 assert.equal((await b.rpc.dashboard()).enabled, true);

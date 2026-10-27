@@ -8,6 +8,7 @@ import { readableError } from "../lib/utils";
 import { useAccount, type Account } from "../components/layout";
 import { showCaptcha } from "../lib/captcha";
 import { privatePageHead } from "../lib/seo";
+import { isPreview } from "../lib/deployment";
 import {
   activeCooldown,
   applySmsCooldown,
@@ -38,8 +39,8 @@ export const Route = createFileRoute("/login")({
 });
 function Login() {
   const { account: targetAccount } = Route.useSearch();
-  const [phone, setPhone] = useState("");
-  const [code, setCode] = useState("");
+  const [phone, setPhone] = useState(isPreview ? "13900000009" : "");
+  const [code, setCode] = useState(isPreview ? "123456" : "");
   const [challenge, setChallenge] = useState<LoginProgress | null>(null);
   const [cooldownState, setCooldownState] = useState(emptyCooldownState);
   const cooldownRef = useRef(cooldownState);
@@ -69,7 +70,7 @@ function Login() {
       const saved = restoreCooldown(sessionStorage.getItem(cooldownStorageKey));
       cooldownRef.current = saved;
       setCooldownState(saved);
-      setPhone(saved.phone);
+      setPhone(saved.phone || (isPreview ? "13900000009" : ""));
       const active = activeCooldown(saved, saved.phone);
       if (active)
         setError(
@@ -135,6 +136,7 @@ function Login() {
       );
       setSentTo("");
       await applyResult(result);
+      if (result.status === "captcha") await completeCaptcha(result);
     } catch (e) {
       if (e instanceof LoginFailure && e.code === "upstream_rate_limit") {
         setChallenge(null);
@@ -145,9 +147,10 @@ function Login() {
       setBusy(null);
     }
   }
-  async function completeCaptcha() {
+  async function completeCaptcha(captcha: Extract<LoginProgress, { status: "captcha" }>) {
+    if (captchaAbort.current) return;
     setError("");
-    if (challenge?.status !== "captcha" || Date.now() >= challenge.expiresAt) {
+    if (Date.now() >= captcha.expiresAt) {
       setChallenge(null);
       setError("登录已过期，请重新获取验证码");
       return;
@@ -156,10 +159,10 @@ function Login() {
     const controller = new AbortController();
     captchaAbort.current = controller;
     try {
-      const proof = await showCaptcha(challenge.appId, challenge.expiresAt, controller.signal);
+      const proof = await showCaptcha(captcha.appId, captcha.expiresAt, controller.signal);
       if (!proof || controller.signal.aborted) return;
       const result = await authRequest<LoginResult>("heybox/complete-captcha", {
-        challenge: challenge.challenge,
+        challenge: captcha.challenge,
         ...proof,
       });
       await applyResult(result);
@@ -193,6 +196,7 @@ function Login() {
         code,
       });
       await applyResult(result);
+      if (result.status === "captcha") await completeCaptcha(result);
     } catch (e) {
       setError(readableError(e));
     } finally {
@@ -264,12 +268,14 @@ function Login() {
                 ? "发送中…"
                 : cooldown
                   ? formatCooldown(cooldown.seconds)
-                  : "发送验证码"}
+                  : isPreview
+                    ? "获取验证码"
+                    : "发送验证码"}
             </Button>
           </div>
           {sentTo && (
             <p role="status" className="mt-2 text-sm text-muted-foreground">
-              验证码已发送至尾号 {sentTo}
+              {isPreview ? "演示验证码：123456（不会发送短信）" : `验证码已发送至尾号 ${sentTo}`}
             </p>
           )}
         </div>
@@ -283,7 +289,7 @@ function Login() {
             type="button"
             className="h-12 w-full rounded-md text-base"
             disabled={busy !== null}
-            onClick={completeCaptcha}
+            onClick={() => completeCaptcha(challenge)}
           >
             {busy === "captcha" ? "正在验证…" : "完成人机验证"}
           </Button>
@@ -298,7 +304,9 @@ function Login() {
         )}
       </form>
       <p className="mt-6 text-center text-sm leading-6 text-muted-foreground">
-        登录可能导致手机 APP 账号退出，手机重新登录一次即可，网站还是可以正常运行
+        {isPreview
+          ? "演示号码：13900000009，验证码：123456。所有操作仅影响模拟数据。"
+          : "登录可能导致手机 APP 账号退出，手机重新登录一次即可，网站还是可以正常运行"}
       </p>
     </section>
   );

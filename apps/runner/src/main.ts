@@ -1,4 +1,5 @@
-import type { Outcome } from '@heybox/contracts';
+import type { Outcome, ActivityResult } from '@heybox/contracts';
+import { ActivityService } from './activities.ts';
 import { ChallengeStore, type LoginStep } from './challenges.ts';
 import { createRunnerServer } from './server.ts';
 import { runChild } from './process.ts';
@@ -18,7 +19,8 @@ const concurrency = Number(process.env.TASK_CONCURRENCY ?? 8);
 const queue = new TaskQueue({ request, concurrency,
   execute: job => runChild<Outcome>({ action: 'daily', job }, 240_000),
   warn: () => console.error('任务服务暂时不可用，稍后重试') });
-const server = createRunnerServer(store, token, key, () => queue.wake());
+const activities = new ActivityService(input => runChild<ActivityResult>({ action: 'activities', request: input }, 90_000));
+const server = createRunnerServer(store, token, key, () => queue.wake(), activities);
 server.listen(Number(process.env.PORT || 8788), process.env.HOST || '127.0.0.1', () => console.log(`Heybox runner ready (task concurrency: ${concurrency})`));
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { queue.stop(); server.close(); });
 async function request(path: string, body: unknown) {

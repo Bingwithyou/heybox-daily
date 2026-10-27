@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 
 export async function verifySeo(base: string) {
-  for (const path of ["/", "/tasks", "/tasks/", "/tasks?from=bookmark"]) {
+  for (const path of [
+    "/",
+    "/tasks",
+    "/tasks/",
+    "/tasks?from=bookmark",
+    "/history",
+    "/history/",
+    "/history?from=bookmark",
+  ]) {
     for (const cookie of [undefined, "better-auth.session_token=invalid"]) {
       const response = await fetch(`${base}${path}`, {
         redirect: "manual",

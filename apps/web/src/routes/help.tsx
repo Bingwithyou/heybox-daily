@@ -48,6 +48,12 @@ function Help() {
           <h2 className="mb-4 text-xl font-semibold">常见问题</h2>
           <div className="divide-y border-y">
             <details className="py-4">
+              <summary className="cursor-pointer font-medium">如何参与抽奖活动？</summary>
+              <p className="mt-3 text-muted-foreground">
+                在“我的任务”展开“抽奖活动”，选择要参与的活动。需要关注时，点击“关注并参与”会关注活动要求的账号；需要拥有游戏时，以小黑盒已同步的游戏库资格为准。参与后会完成分享任务，并显示核实后的抽奖券数量。
+              </p>
+            </details>
+            <details className="py-4">
               <summary className="cursor-pointer font-medium">登录会影响手机 APP 吗？</summary>
               <p className="mt-3 text-muted-foreground">
                 可能会让手机上的小黑盒退出登录。手机重新登录后，请留意下一次任务是否正常；网站提示登录失效时，自动任务会暂停，需要重新登录。

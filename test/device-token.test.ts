@@ -96,3 +96,89 @@ test('SDK HTTP failures are surfaced without evaluating response text', async ()
     return true;
   });
 });
+
+test('SDK errors reject before a later token can hide the failure', async () => {
+  for (const sdkCode of [-1, -2, -3, -4]) {
+    await assert.rejects(getDeviceToken({ loadSdk: source(`
+      setTimeout(() => {
+        _smConf.onError(${sdkCode});
+        SMSdk.getDeviceId = () => '${token}';
+        _smReadyFuncs.forEach(callback => callback());
+      }, 0);
+    `), timeoutMs: 500 }), error => {
+      const diagnostic = errorDiagnostic(error);
+      assert.equal(diagnostic.stage, sdkCode === -4 ? 'sdk_error' : 'request_token');
+      assert.equal(diagnostic.sdkCode, sdkCode);
+      assert.ok(!diagnostic.message.includes('超时'));
+      return true;
+    });
+  }
+});
+
+test('device-service failures retain only numeric response diagnostics without sending requests', async () => {
+  for (const fixture of [
+    { httpStatus: 0, sdkCode: -1, upstreamCode: undefined },
+    { httpStatus: 503, sdkCode: -2, upstreamCode: undefined },
+    { httpStatus: 429, sdkCode: -2, upstreamCode: undefined },
+    { httpStatus: 200, sdkCode: -3, upstreamCode: '1902' },
+  ]) {
+    await assert.rejects(getDeviceToken({ loadSdk: source(`
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'https://fp-it.portal101.cn/deviceprofile/v4?token=private-query');
+      Object.defineProperties(xhr, {
+        readyState: { value: 4 }, status: { value: ${fixture.httpStatus} },
+        response: { value: ${JSON.stringify({ code: fixture.upstreamCode, message: 'private-message', detail: { deviceId: 'private-device' } })} },
+      });
+      xhr.dispatchEvent(new Event('readystatechange'));
+      _smConf.onError(${fixture.sdkCode});
+    `), timeoutMs: 500 }), error => {
+      const diagnostic = errorDiagnostic(error);
+      assert.equal(diagnostic.stage, 'request_token');
+      assert.equal(diagnostic.sdkCode, fixture.sdkCode);
+      assert.equal(diagnostic.httpStatus, fixture.httpStatus);
+      assert.equal(diagnostic.upstreamCode, fixture.upstreamCode ? Number(fixture.upstreamCode) : undefined);
+      assert.ok(Number.isInteger(diagnostic.requestDurationMs) && diagnostic.requestDurationMs! >= 0);
+      assert.ok(!JSON.stringify(diagnostic).includes('private-'));
+      return true;
+    });
+  }
+});
+
+test('unrelated requests and unrecognized SDK error values cannot leak into diagnostics', async () => {
+  await assert.rejects(getDeviceToken({ loadSdk: source(`
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://unrelated.example/private?token=private-query');
+    Object.defineProperties(xhr, {
+      readyState: { value: 4 }, status: { value: 503 }, response: { value: { code: 1902 } },
+    });
+    xhr.dispatchEvent(new Event('readystatechange'));
+    _smConf.onError({ message: 'private-error', token: 'private-token' });
+  `), timeoutMs: 500 }), error => {
+    const diagnostic = errorDiagnostic(error);
+    assert.equal(diagnostic.stage, 'sdk_error');
+    assert.equal(diagnostic.sdkCode, undefined);
+    assert.equal(diagnostic.httpStatus, undefined);
+    assert.equal(diagnostic.upstreamCode, undefined);
+    assert.ok(!JSON.stringify(diagnostic).includes('private-'));
+    return true;
+  });
+});
+
+test('nonnumeric response codes are omitted from device-service diagnostics', async () => {
+  await assert.rejects(getDeviceToken({ loadSdk: source(`
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'https://fp-it.portal101.cn/deviceprofile/v4');
+    Object.defineProperties(xhr, {
+      readyState: { value: 4 }, status: { value: 200 },
+      response: { value: { code: 'private-code', message: 'private-message' } },
+    });
+    xhr.dispatchEvent(new Event('readystatechange'));
+    _smConf.onError(-3);
+  `), timeoutMs: 500 }), error => {
+    const diagnostic = errorDiagnostic(error);
+    assert.equal(diagnostic.httpStatus, 200);
+    assert.equal(diagnostic.upstreamCode, undefined);
+    assert.ok(!JSON.stringify(diagnostic).includes('private-'));
+    return true;
+  });
+});

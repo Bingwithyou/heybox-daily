@@ -11,7 +11,7 @@ export default {
     let response: Response;
     try {
       response =
-        crawlerDocument(request) ||
+        crawlerDocument(request, env.DEPLOYMENT_ENV === "staging") ||
         (await pageAccess(request, env, context)) ||
         (await api(request, env, context)) ||
         (await start.fetch(request));
@@ -19,7 +19,10 @@ export default {
       response = Response.json({ message: "服务暂时不可用，请稍后重试" }, { status: 503 });
     }
     const result = new Response(response.body, response);
-    if (shouldNoindex(new URL(request.url).pathname, response.status))
+    if (
+      env.DEPLOYMENT_ENV === "staging" ||
+      shouldNoindex(new URL(request.url).pathname, response.status)
+    )
       result.headers.set("x-robots-tag", "noindex, follow");
     result.headers.set("x-content-type-options", "nosniff");
     result.headers.set("referrer-policy", "same-origin");
@@ -31,6 +34,7 @@ export default {
     return result;
   },
   async scheduled(event: ScheduledController, env: Env, context: ExecutionContext) {
+    if (env.DEPLOYMENT_ENV === "staging") return;
     context.waitUntil(runScheduled(env, event.scheduledTime));
   },
 };

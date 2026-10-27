@@ -65,6 +65,30 @@ const credential = (account: string): Credential => ({
   ciphertext: "encrypted-private-value",
 });
 
+test("activity access uses only the current user's valid credential and does not depend on daily automation", async () => {
+  const f = fixture();
+  try {
+    const first = credential("123");
+    const id = await f.store.enroll(first);
+    await f.store.enroll(credential("456"));
+    assert.deepEqual({ ...(await f.store.activityCredential(id)) }, first);
+    assert.equal(await f.store.activityAccess("123", first.version), true);
+    assert.equal(await f.store.activityAccess("456", first.version), false);
+    await f.store.setEnabled(id, false);
+    assert.equal(await f.store.activityAccess("123", first.version), true);
+    const replacement = credential("123");
+    await f.store.enroll(replacement);
+    assert.equal(await f.store.activityAccess("123", first.version), false);
+    f.db.prepare("UPDATE hosting SET credential_state='expired' WHERE user_id=?").run(id);
+    assert.equal(await f.store.activityCredential(id), null);
+    assert.equal(await f.store.activityAccess("123", replacement.version), false);
+    await f.store.deleteUser("heybox:456");
+    assert.equal(await f.store.activityCredential("heybox:456"), null);
+  } finally {
+    f.close();
+  }
+});
+
 test("an idle queue uses one indexed read and no UPDATE, regardless of completed history", async () => {
   const f = fixture();
   try {
@@ -424,6 +448,89 @@ test("retries do not turn unknown experience into a confirmed partial total", as
     } finally {
       f.close();
     }
+  }
+});
+test("retries accumulate battery gains and retain earlier executed tasks", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    const first = (await f.store.claim())!;
+    await f.store.finish(first.id, first.lease, first.credential.version, {
+      status: "failed",
+      reason: "upstream",
+      batteryDelta: 1,
+      execution: { sign: "executed", "1": "skipped" },
+    });
+    f.advance(60_000);
+    const next = (await f.store.claim())!;
+    await f.store.finish(next.id, next.lease, next.credential.version, {
+      status: "completed",
+      batteryDelta: 2,
+      execution: { sign: "skipped", "1": "skipped", "19": "executed", "31": "executed" },
+    });
+    const result = (await f.store.dashboard(id))!.today!.result!;
+    assert.equal(result.batteryDelta, 3);
+    assert.deepEqual(result.execution, {
+      sign: "executed",
+      "1": "skipped",
+      "19": "executed",
+      "31": "executed",
+    });
+  } finally {
+    f.close();
+  }
+});
+test("legacy or missing retry data cannot become a known battery total or an all-skipped run", async () => {
+  for (const [firstDelta, nextDelta] of [
+    [undefined, 1],
+    [1, undefined],
+  ]) {
+    const f = fixture();
+    try {
+      const id = await f.store.enroll(credential("123"));
+      const first = (await f.store.claim())!;
+      await f.store.finish(first.id, first.lease, first.credential.version, {
+        status: "failed",
+        batteryDelta: firstDelta,
+      });
+      f.advance(60_000);
+      const next = (await f.store.claim())!;
+      await f.store.finish(next.id, next.lease, next.credential.version, {
+        status: "completed",
+        batteryDelta: nextDelta,
+        execution: { sign: "skipped", "1": "skipped", "19": "skipped", "31": "skipped" },
+      });
+      const result = (await f.store.dashboard(id))!.today!.result!;
+      assert.equal(result.batteryDelta, undefined);
+      assert.deepEqual(result.execution, {});
+    } finally {
+      f.close();
+    }
+  }
+});
+test("history is account-scoped, includes today and exposes a task type for the latest fifteen records", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    await f.store.enroll(credential("456"));
+    const insert = f.db.prepare(
+      "INSERT INTO jobs(id,user_id,date,status,available_at,created_at,updated_at) VALUES(?,?,?,'completed',0,0,0)",
+    );
+    for (let day = 1; day <= 20; day++)
+      insert.run(`past-${day}`, id, `2026-10-${String(day).padStart(2, "0")}`);
+    const history = (await f.store.history(id))!;
+    assert.equal(history.account, "123");
+    assert.equal(history.records.length, 15);
+    assert.equal(history.records[0].date, "2026-10-27");
+    assert.equal(history.records[1].date, "2026-10-20");
+    assert.equal(history.records[14].date, "2026-10-07");
+    assert.ok(
+      history.records.every((row) => row.taskType === "daily" && row.taskName === "每日任务"),
+    );
+    assert.equal((await f.store.history("heybox:456"))!.records.length, 1);
+    assert.equal(await f.store.history("heybox:missing"), null);
+  } finally {
+    f.close();
   }
 });
 test("the daily schedule uses Beijing 00:01 across UTC dates", () => {

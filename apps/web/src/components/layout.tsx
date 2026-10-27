@@ -16,6 +16,7 @@ import { authRequest } from "../lib/client";
 import { readAccounts, type Account } from "../lib/accounts";
 export type { Account } from "../lib/accounts";
 import { readableError } from "../lib/utils";
+import { isPreview } from "../lib/deployment";
 
 const AccountMenu = lazy(() => import("./account-menu"));
 const Modal = lazy(() => import("./dialog").then(({ Modal }) => ({ default: Modal })));
@@ -113,26 +114,57 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <AccountContext.Provider value={{ account, setAccount, refreshAccounts }}>
       <div className="flex min-h-dvh flex-col">
+        {isPreview && (
+          <div
+            role="status"
+            className="border-b bg-muted px-6 py-2 text-center text-xs text-muted-foreground"
+          >
+            预发布演示 · 使用模拟数据
+          </div>
+        )}
         <header className="border-b">
           <div className="mx-auto flex h-20 max-w-6xl items-center justify-between gap-4 px-6 sm:px-8">
-            <Link
-              to="/"
-              className="shrink-0 whitespace-nowrap text-xl font-semibold tracking-tight sm:text-2xl"
-            >
-              Heybox Daily
-            </Link>
+            <div className="flex shrink-0 items-center gap-3 text-foreground">
+              <Link
+                to="/"
+                className="shrink-0 whitespace-nowrap text-xl font-semibold tracking-tight sm:text-2xl"
+              >
+                Heybox
+              </Link>
+              <a
+                href="https://github.com/Cansiny0320/heybox-daily"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="GitHub 仓库"
+                title="GitHub 仓库"
+                className="inline-flex shrink-0 text-foreground"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="size-6">
+                  <path d="M12 .75a11.25 11.25 0 0 0-3.558 21.923c.563.105.77-.244.77-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.79-1.509-3.79-1.509-.512-1.3-1.25-1.646-1.25-1.646-1.022-.699.077-.685.077-.685 1.13.08 1.725 1.16 1.725 1.16 1.005 1.723 2.636 1.225 3.278.937.103-.728.393-1.225.715-1.507-2.499-.284-5.126-1.25-5.126-5.563 0-1.229.44-2.233 1.16-3.02-.116-.284-.503-1.429.11-2.978 0 0 .945-.302 3.094 1.154A10.79 10.79 0 0 1 12 6.191a10.8 10.8 0 0 1 2.818.379c2.148-1.456 3.091-1.154 3.091-1.154.615 1.549.228 2.694.112 2.978.722.787 1.159 1.791 1.159 3.02 0 4.324-2.631 5.276-5.138 5.555.404.349.765 1.039.765 2.094 0 1.512-.014 2.732-.014 3.103 0 .301.203.653.774.542A11.25 11.25 0 0 0 12 .75Z" />
+                </svg>
+              </a>
+            </div>
             <nav
               aria-label="主导航"
               className="flex min-w-0 items-center justify-end gap-3 text-base sm:gap-8"
             >
               {account && (
-                <Link
-                  to="/tasks"
-                  className="hidden text-muted-foreground hover:text-foreground sm:block"
-                  activeProps={{ className: "text-foreground" }}
-                >
-                  我的任务
-                </Link>
+                <>
+                  <Link
+                    to="/tasks"
+                    className="hidden text-muted-foreground hover:text-foreground sm:block"
+                    activeProps={{ className: "text-foreground" }}
+                  >
+                    我的任务
+                  </Link>
+                  <Link
+                    to="/history"
+                    className="hidden text-muted-foreground hover:text-foreground sm:block"
+                    activeProps={{ className: "text-foreground" }}
+                  >
+                    历史记录
+                  </Link>
+                </>
               )}
               <Link
                 to="/sponsor"
@@ -176,18 +208,6 @@ export function Layout({ children }: { children: ReactNode }) {
                   登录
                 </Link>
               )}
-              <a
-                href="https://github.com/Cansiny0320/heybox-daily"
-                target="_blank"
-                rel="noreferrer"
-                aria-label="GitHub 仓库"
-                title="GitHub 仓库"
-                className="inline-flex shrink-0 text-muted-foreground hover:text-foreground"
-              >
-                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="size-5">
-                  <path d="M12 .75a11.25 11.25 0 0 0-3.558 21.923c.563.105.77-.244.77-.542 0-.267-.01-.975-.015-1.914-3.13.68-3.79-1.509-3.79-1.509-.512-1.3-1.25-1.646-1.25-1.646-1.022-.699.077-.685.077-.685 1.13.08 1.725 1.16 1.725 1.16 1.005 1.723 2.636 1.225 3.278.937.103-.728.393-1.225.715-1.507-2.499-.284-5.126-1.25-5.126-5.563 0-1.229.44-2.233 1.16-3.02-.116-.284-.503-1.429.11-2.978 0 0 .945-.302 3.094 1.154A10.79 10.79 0 0 1 12 6.191a10.8 10.8 0 0 1 2.818.379c2.148-1.456 3.091-1.154 3.091-1.154.615 1.549.228 2.694.112 2.978.722.787 1.159 1.791 1.159 3.02 0 4.324-2.631 5.276-5.138 5.555.404.349.765 1.039.765 2.094 0 1.512-.014 2.732-.014 3.103 0 .301.203.653.774.542A11.25 11.25 0 0 0 12 .75Z" />
-                </svg>
-              </a>
             </nav>
           </div>
         </header>

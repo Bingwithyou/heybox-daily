@@ -1,5 +1,10 @@
 import type { Env } from "./env.ts";
-import { LoginFailure, loginFailureSchema } from "@heybox/contracts";
+import {
+  LoginFailure,
+  loginFailureSchema,
+  ActivityFailure,
+  activityFailureSchema,
+} from "@heybox/contracts";
 
 export function sameOrigin(request: Request, siteURL: string) {
   return request.headers.get("origin") === new URL(siteURL).origin;
@@ -70,6 +75,11 @@ export async function runnerRequest(env: Env, path: string, input: unknown) {
     redirect: "manual",
   });
   if (!response.ok) {
+    if (path === "/activities" && [400, 409].includes(response.status)) {
+      const failure = activityFailureSchema.safeParse(await response.json().catch(() => null));
+      if (failure.success) throw new ActivityFailure(failure.data.code);
+      throw new Error(`执行端响应 HTTP ${response.status}`);
+    }
     if (response.status === 400) {
       const failure = loginFailureSchema.safeParse(await response.json().catch(() => null));
       if (failure.success) throw new LoginFailure(failure.data.code);

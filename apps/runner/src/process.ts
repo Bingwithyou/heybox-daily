@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { LoginFailure, loginFailureSchema, jobSchema, outcomeSchema } from '@heybox/contracts';
+import { LoginFailure, loginFailureSchema, jobSchema, outcomeSchema, ActivityFailure, activityFailureSchema } from '@heybox/contracts';
 import { errorDiagnostic, type ErrorDiagnostic } from 'heybox-daily/diagnostics';
 import { createLoginLog } from './login-logging.ts';
 
@@ -18,7 +18,7 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
     });
     let output = ''; let settled = false;
     let failure: { category: string; diagnostic?: ErrorDiagnostic } | undefined;
-    const action = input && typeof input === 'object' && 'action' in input && ['begin', 'send', 'verify', 'daily'].includes(String(input.action)) ? input.action : 'unknown';
+    const action = input && typeof input === 'object' && 'action' in input && ['begin', 'send', 'verify', 'daily', 'activities'].includes(String(input.action)) ? input.action : 'unknown';
     const kill = () => {
       try { if (child.pid && process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* already exited */ }
     };
@@ -58,7 +58,8 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
           const category = categories.includes(parsed.category || '') ? parsed.category! : 'internal';
           failure = { category, diagnostic: parsed.diagnostic };
           const known = loginFailureSchema.safeParse(parsed);
-          finish(known.success ? new LoginFailure(known.data.code) : new Error(parsed.error || '执行失败'));
+          const activity = action === 'activities' ? activityFailureSchema.safeParse(parsed) : undefined;
+          finish(activity?.success ? new ActivityFailure(activity.data.code) : known.success ? new LoginFailure(known.data.code) : new Error(parsed.error || '执行失败'));
         }
         else finish(undefined, parsed.value);
       } catch { finish(new Error('执行响应无效')); }

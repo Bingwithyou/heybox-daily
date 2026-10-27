@@ -6,21 +6,31 @@ const sdkUrl = 'https://static.portal101.cn/dist/web/v3.0.0/fp.min.js';
 // Reviewed official SDK. Do not execute an upstream replacement in Node without review.
 const sdkSha256 = '7de91adbb7666216d9a72ba1c8655003e393aa5235f6345e399425cd78469a78';
 const tokenPattern = /^B[A-Za-z0-9+/=_-]{88}$/;
+const deviceProfileUrl = 'https://fp-it.portal101.cn/deviceprofile/v4';
 const publicConfig = {
   organization: '0yD85BjYvGFAvHaSQ1mc', appId: 'heybox_website',
   publicKey: 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCXj9exmI4nQjmT52iwr+yf7hAQ06bfSZHTAHUfRBYiagCf/whhd8es0R79wBigpiHLd28TKA8b8mGR8OiiI1hV+qfynCWihvp3mdj8MiiH6SU3lhro2hkfYzImZB0RmWr2zE4Xt1+A6Oyp6bf+W7JSxYUXHw3nNv7Td4jw4jEFKQIDAQAB',
   staticHost: 'static.portal101.cn', protocol: 'https', noNeedRetry: true,
 };
 
+export interface DeviceTokenDetails {
+  sdkCode?: number;
+  httpStatus?: number;
+  upstreamCode?: number;
+  requestDurationMs?: number;
+}
 export class DeviceTokenError extends Error {
   readonly stage: string;
-  constructor(stage: string, message: string, cause?: unknown) {
+  readonly details: DeviceTokenDetails;
+  constructor(stage: string, message: string, cause?: unknown, details: DeviceTokenDetails = {}) {
     super(message, { cause });
     this.stage = stage;
+    this.details = { ...details };
   }
 }
 interface DeviceTokenOptions { fetchImpl?: typeof fetch; loadSdk?: () => Promise<string>; timeoutMs?: number }
-type SdkWindow = DOMWindow & { _smConf: typeof publicConfig; _smReadyFuncs: Array<() => void>; SMSdk: { getDeviceId?: () => unknown } };
+type SdkWindow = DOMWindow & { _smConf: typeof publicConfig & { onError(code: unknown): void };
+  _smReadyFuncs: Array<() => void>; SMSdk: { getDeviceId?: () => unknown } };
 
 async function downloadSdk(fetchImpl: typeof fetch) {
   const response = await fetchImpl(sdkUrl, { redirect: 'error', signal: AbortSignal.timeout(15_000) });
@@ -39,11 +49,39 @@ function applyProperties(target: object, values: object, keys: string[]) {
   }
 }
 
+function observeTokenResponse(window: SdkWindow, record: (details: DeviceTokenDetails) => void) {
+  const open = window.XMLHttpRequest.prototype.open;
+  // Observe the SDK's response without copying its fingerprint payload, headers or token.
+  window.XMLHttpRequest.prototype.open = function (method: string, url: string | URL,
+    async: boolean = true, username?: string | null, password?: string | null) {
+    open.call(this, method, url, async, username, password);
+    const target = new URL(String(url), window.location.href);
+    if (method.toUpperCase() !== 'POST' || target.origin + target.pathname !== deviceProfileUrl) return;
+    const started = performance.now();
+    const capture = () => {
+      if (this.readyState !== 4) return;
+      this.removeEventListener('readystatechange', capture);
+      const details: DeviceTokenDetails = { httpStatus: this.status,
+        requestDurationMs: Math.max(0, Math.round(performance.now() - started)) };
+      try {
+        const response: unknown = this.response;
+        const code = response && typeof response === 'object' && 'code' in response ? response.code : undefined;
+        const numeric = typeof code === 'string' && /^\d{1,6}$/.test(code) ? Number(code) : code;
+        if (typeof numeric === 'number' && Number.isInteger(numeric) && numeric >= 0 && numeric <= 999_999)
+          details.upstreamCode = numeric;
+      } catch { /* Some XHR failure states do not expose a response. */ }
+      record(details);
+    };
+    this.addEventListener('readystatechange', capture);
+  };
+}
+
 export async function getDeviceToken(options: DeviceTokenOptions = {}): Promise<string> {
   let dom: JSDOM | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let poll: ReturnType<typeof setInterval> | undefined;
   let stage = 'download_sdk';
+  let responseDetails: DeviceTokenDetails = {};
   try {
     const source = await (options.loadSdk || (() => downloadSdk(options.fetchImpl || fetch)))();
     stage = 'initialize';
@@ -63,9 +101,17 @@ export async function getDeviceToken(options: DeviceTokenOptions = {}): Promise<
       'language', 'languages', 'platform', 'hardwareConcurrency', 'deviceMemory', 'maxTouchPoints', 'vendor', 'product', 'productSub']);
     applyProperties(window.screen, fingerprint.screen, ['width', 'height', 'availWidth', 'availHeight', 'colorDepth', 'pixelDepth', 'availTop', 'availLeft']);
     applyProperties(window, fingerprint.screen, ['innerWidth', 'innerHeight', 'outerWidth', 'outerHeight', 'devicePixelRatio']);
-    window._smConf = { ...publicConfig };
+    observeTokenResponse(window, details => { responseDetails = details; });
     window.SMSdk = {};
     return await new Promise<string>((resolve, reject) => {
+      window._smConf = { ...publicConfig, onError: value => {
+        const sdkCode = typeof value === 'number' && [-1, -2, -3, -4].includes(value) ? value : undefined;
+        const message = sdkCode === -1 ? '设备令牌服务连接失败'
+          : sdkCode === -2 ? '设备令牌服务 HTTP 请求失败'
+          : sdkCode === -3 ? '设备令牌服务拒绝请求' : '设备令牌 SDK 返回错误';
+        reject(new DeviceTokenError(sdkCode && sdkCode !== -4 ? 'request_token' : 'sdk_error', message,
+          undefined, { ...responseDetails, sdkCode }));
+      } };
       const check = () => {
         try {
           const token = window.SMSdk.getDeviceId?.();
@@ -83,7 +129,8 @@ export async function getDeviceToken(options: DeviceTokenOptions = {}): Promise<
     });
   } catch (cause) {
     if (cause instanceof DeviceTokenError) throw cause;
-    throw new DeviceTokenError(stage, '未能从官网获取设备令牌，请检查服务器网络后重试', cause instanceof Error ? cause : new Error(String(cause)));
+    throw new DeviceTokenError(stage, '未能从官网获取设备令牌',
+      cause instanceof Error ? cause : new Error(String(cause)), responseDetails);
   } finally {
     clearTimeout(timer); clearInterval(poll);
     dom?.window.close();

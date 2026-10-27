@@ -1,0 +1,25 @@
+services:
+  runner:
+    build:
+      context: .
+      target: preview-runner
+    init: true
+    restart: unless-stopped
+    read_only: true
+    env_file: ./private/staging/runner.env
+    tmpfs:
+      - /tmp:size=64m
+    mem_limit: 256m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.4
+    command: [tunnel, --no-autoupdate, run]
+    env_file: ./private/staging/tunnel.env
+    depends_on: [runner]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

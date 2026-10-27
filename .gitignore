@@ -9,6 +9,8 @@ signer/target/
 __pycache__/
 .env
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
 .wrangler/
 .tanstack/
 .output/

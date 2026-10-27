@@ -2,8 +2,9 @@ import { HeyboxApiError, HeyboxClient } from 'heybox-daily/client';
 import { DeviceTokenError } from 'heybox-daily/device-token';
 import { errorDiagnostic } from 'heybox-daily/diagnostics';
 import { experienceDelta, inspect, runDaily } from 'heybox-daily/tasks';
+import { ActivityError, listActivities, participateActivity } from 'heybox-daily/activities';
 import type { Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
-import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot } from '@heybox/contracts';
+import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot, activityRequestSchema, ActivityFailure, type ActivityRequest } from '@heybox/contracts';
 import { decryptCredential } from './crypto.ts';
 import { fileURLToPath } from 'node:url';
 import { loginStep, type LoginInput } from './login.ts';
@@ -23,7 +24,7 @@ export function failureCategory(error: unknown) {
 }
 
 function publicSnapshot(value: Inspection): TaskSnapshot {
-  return { exp: value.exp, coin: value.coin, tasks: taskIds.map(id => ({ id,
+  return { exp: value.exp, coin: value.coin, battery: value.battery, tasks: taskIds.map(id => ({ id,
     state: (id === 'sign' ? value.signed : value.tasks.find(task => task.id === id)?.state === 'finish') ? 'finish' : 'waiting' })) };
 }
 async function checkpoint(job: Job) {
@@ -39,16 +40,19 @@ async function daily(job: Job): Promise<Outcome & { category?: string }> {
   let before: InspectionSnapshot | undefined;
   let latest: InspectionSnapshot | undefined;
   let expDelta: number | undefined;
+  const execution: NonNullable<Outcome['execution']> = {};
   try {
     const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: () => checkpoint(job),
-      onSnapshot: (value, delta) => { before ||= value; latest = value; expDelta = delta; } });
+      onSnapshot: (value, delta) => { before ||= value; latest = value; expDelta = delta; },
+      onTask: (id, action) => { execution[id] = action; } });
     await checkpoint(job);
     return { status: 'completed', expDelta: result.expDelta, coinDelta: result.coinDelta,
+      batteryDelta: result.batteryDelta, execution,
       profile: result.snapshot.profile, snapshot: publicSnapshot(result.snapshot) };
   } catch (error) {
     const text = error instanceof Error ? error.message : '';
-    if (text === 'cancelled' || text === 'cross_day') return { status: 'cancelled', reason: text };
-    if (/登录已过期|登录已失效|设备令牌无效/.test(text)) return { status: 'auth_expired', reason: 'auth_expired' };
+    if (text === 'cancelled' || text === 'cross_day') return { status: 'cancelled', reason: text, execution };
+    if (/登录已过期|登录已失效|设备令牌无效/.test(text)) return { status: 'auth_expired', reason: 'auth_expired', execution };
     let snapshot: TaskSnapshot | undefined;
     try {
       await checkpoint(job);
@@ -57,15 +61,35 @@ async function daily(job: Job): Promise<Outcome & { category?: string }> {
       expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
       latest = state; snapshot = publicSnapshot(state);
     } catch { /* keep partial result optional */ }
-    return { status: 'failed', reason: 'upstream', category: failureCategory(error), snapshot,
-      expDelta, coinDelta: before && latest ? latest.coin - before.coin : undefined };
+    return { status: 'failed', reason: 'upstream', category: failureCategory(error), snapshot, execution,
+      expDelta, coinDelta: before && latest ? latest.coin - before.coin : undefined,
+      batteryDelta: before?.battery === undefined || latest?.battery === undefined ? undefined : latest.battery - before.battery };
   }
 }
 let secrets: string[] = [];
+let activityOperation = false;
 async function main() {
   let data = '';
   for await (const chunk of process.stdin) { data += chunk; if (data.length > 16_384) throw new Error('请求过大'); }
-  const input = JSON.parse(data) as LoginInput | { action: 'daily'; job: Job };
+  const input = JSON.parse(data) as LoginInput | { action: 'daily'; job: Job } | { action: 'activities'; request: ActivityRequest };
+  if (input.action === 'activities') {
+    activityOperation = true;
+    const request = activityRequestSchema.parse(input.request);
+    const config = decryptCredential(request.credential, process.env.CREDENTIAL_KEY || '');
+    secrets = Object.values(config.session);
+    const client = new HeyboxClient(config);
+    const check = async () => {
+      const response = await fetch(`${process.env.WEBSITE_URL}/internal/activities/check`, { method: 'POST',
+        headers: { authorization: `Bearer ${process.env.RUNNER_SERVICE_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ account: request.credential.account, version: request.credential.version }),
+        signal: AbortSignal.timeout(10_000), redirect: 'error' });
+      if (!response.ok) throw new ActivityError('activity_auth');
+    };
+    await check();
+    if (request.mode === 'list') return { mode: 'list', activities: await listActivities(client, config.session.heybox_id) };
+    return { mode: 'participate', activity: await participateActivity(client, config.session.heybox_id,
+      request.activityId, request.approvedFollowIds, { checkpoint: check }) };
+  }
   if (input.action === 'begin' || input.action === 'send' || input.action === 'verify') {
     secrets = [input.phone];
     if ('config' in input) secrets.push(...Object.values(input.config.session));
@@ -79,6 +103,11 @@ async function main() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().then(value => process.stdout.write(JSON.stringify({ ok: true, value })), error => {
     const message = error instanceof Error ? error.message : '';
+    if (activityOperation) {
+      const failure = new ActivityFailure(error instanceof ActivityError ? error.code : /登录已过期|登录已失效|设备令牌无效/.test(message) ? 'activity_auth' : 'activity_upstream');
+      process.stdout.write(JSON.stringify({ ok: false, error: failure.message, code: failure.code, category: failureCategory(error), diagnostic: errorDiagnostic(error, secrets) }));
+      return;
+    }
     const safe = /验证码.*(?:不正确|错误|过期)|频繁/.test(message) ? '验证码错误、过期或请求过于频繁，请核对后重试' : '小黑盒暂时无法完成登录，请稍后重试';
     const category = failureCategory(error);
     process.stdout.write(JSON.stringify({ ok: false, error: safe, category, diagnostic: errorDiagnostic(error, secrets),

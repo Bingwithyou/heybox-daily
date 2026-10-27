@@ -7,7 +7,7 @@ export async function pageAccess(
   execution: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
-  if (!["/", "/tasks", "/tasks/"].includes(path)) return null;
+  if (!["/", "/tasks", "/tasks/", "/history", "/history/"].includes(path)) return null;
   if (request.method !== "GET" && request.method !== "HEAD") return null;
   // Guests must reach the login page even when a local preview has no auth configuration.
   const session =
