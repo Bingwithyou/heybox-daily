@@ -8,6 +8,9 @@ interface WebOptions { host?: string; body?: URLSearchParams }
 interface ApiResponse<T> { status?: string; msg?: string; result: T }
 
 export class HeyboxApiError extends Error {
+  readonly endpoint: string;
+  readonly status: string;
+  readonly upstreamMessage: string;
   readonly retryCode: boolean;
   readonly captchaRequired: boolean;
   readonly captchaAppId?: string;
@@ -19,6 +22,9 @@ export class HeyboxApiError extends Error {
     const captchaRequired = status === 'show_captcha';
     const reason = captchaRequired ? '小黑盒要求完成人机验证后才能继续登录' : expired ? '验证码已过期，请重新登录获取新的验证码' : limited ? '请求过于频繁，请稍后再试' : wrongCode ? '验证码不正确，请重新输入' : `接口未成功：${endpoint}（${safeStatus}）`;
     super(reason);
+    this.endpoint = endpoint;
+    this.status = safeStatus || 'unknown';
+    this.upstreamMessage = detail;
     this.captchaRequired = captchaRequired;
     const appId = result && typeof result === 'object' && 'appid' in result ? String(result.appid) : '';
     if (captchaRequired && /^\d{1,32}$/.test(appId)) this.captchaAppId = appId;
@@ -44,7 +50,7 @@ export class HeyboxClient implements TaskClient {
         method: body ? 'POST' : 'GET', headers, body,
         redirect: 'error', signal: AbortSignal.timeout(20000),
       });
-    } catch { throw new Error(`请求失败或超时：${endpoint}`); }
+    } catch (cause) { throw new Error(`请求失败或超时：${endpoint}`, { cause }); }
     if (!response.ok) throw new Error(`HTTP ${response.status}：${endpoint}`);
     let data: ApiResponse<T>;
     try { data = await response.json() as ApiResponse<T>; } catch { throw new Error(`接口返回了非 JSON 内容：${endpoint}`); }

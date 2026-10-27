@@ -25,7 +25,7 @@ try {
       console.log(`经验 ${state.exp}，H 币 ${state.coin}`);
     } else {
       const summary = await runDaily(client, config.session.heybox_id);
-      console.log(`今日任务已完成，本次经验 +${summary.expDelta}，H 币 +${summary.coinDelta}`);
+      console.log(`今日任务已完成，${summary.expDelta === undefined ? '' : `本次经验 +${summary.expDelta}，`}H 币 +${summary.coinDelta}`);
     }
   }
 } catch (error) {

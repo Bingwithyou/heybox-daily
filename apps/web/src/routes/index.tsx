@@ -203,7 +203,7 @@ function Dashboard() {
           {reason && reason !== "auth_expired" && reason !== "cancelled"
             ? `${publicReasons[reason]}${today?.status === "queued" ? "，稍后自动重试" : ""}`
             : today?.status === "completed"
-              ? `已核实全部完成 · 经验 ${rewardDelta(today.result?.expDelta || 0)} · H 币 ${rewardDelta(today.result?.coinDelta || 0)}`
+              ? `已核实全部完成${today.result?.expDelta === undefined ? "" : ` · 经验 ${rewardDelta(today.result.expDelta)}`}${today.result?.coinDelta === undefined ? "" : ` · H 币 ${rewardDelta(today.result.coinDelta)}`}`
               : running
                 ? "执行结果会自动更新"
                 : ""}
@@ -227,9 +227,11 @@ function Dashboard() {
                     <td className="py-5 tabular-nums">{row.date}</td>
                     <td className="py-5 text-muted-foreground">{statusNames[row.status]}</td>
                     <td className="py-5 text-right tabular-nums">
-                      {row.result?.expDelta !== undefined
-                        ? `${rewardDelta(row.result.expDelta)} / ${rewardDelta(row.result.coinDelta || 0)}`
-                        : "—"}
+                      {row.result?.expDelta === undefined ? "—" : rewardDelta(row.result.expDelta)}
+                      {" / "}
+                      {row.result?.coinDelta === undefined
+                        ? "—"
+                        : rewardDelta(row.result.coinDelta)}
                     </td>
                   </tr>
                 ))}

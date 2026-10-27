@@ -19,7 +19,23 @@ export function snapshot(result: TaskListResult | undefined, account: string): T
   }
   const level = result!.user!.level_info;
   if (!Number.isFinite(Number(level?.exp)) || !Number.isFinite(Number(level?.coin))) throw new Error('任务列表缺少经验或 H 币数据');
-  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin), profile: accountProfile(result!.user) };
+  return { tasks, exp: Number(level!.exp), coin: Number(level!.coin), profile: accountProfile(result!.user),
+    level: nonnegativeInteger(level?.level), maxExp: nonnegativeInteger(level?.max_exp, 1) };
+}
+
+function nonnegativeInteger(value: unknown, minimum = 0): number | undefined {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return undefined;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= minimum ? number : undefined;
+}
+
+export function experienceDelta(before: TaskSnapshot, after: TaskSnapshot): number | undefined {
+  if (before.level === undefined || after.level === undefined) return undefined;
+  let delta = after.exp - before.exp;
+  if (after.level === before.level + 1 && before.maxExp !== undefined && before.exp <= before.maxExp) delta += before.maxExp;
+  else if (after.level !== before.level) return undefined;
+  // Missing intermediate levels or a balance decrease cannot establish an earned amount.
+  return Number.isFinite(delta) && delta >= 0 ? delta : undefined;
 }
 
 export function signedToday(state: SignState | undefined, time = Date.now()) {
@@ -65,12 +81,19 @@ export async function inspect(client: Pick<TaskClient, 'tasks' | 'signState'>, a
   return { ...current, signed: signedToday(sign, now()) };
 }
 
-interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot) => void }
+interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot, expDelta: number | undefined) => void }
 export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {} }: RunOptions = {}) {
   await checkpoint();
   const before = await inspect(client, account, now);
-  onSnapshot(before);
+  let expDelta: number | undefined = 0;
+  onSnapshot(before, expDelta);
   let current: TaskSnapshot = before;
+  const record = (value: TaskSnapshot) => {
+    const gain = experienceDelta(current, value);
+    expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
+    current = value;
+    onSnapshot(current, expDelta);
+  };
   if (!before.signed) {
     await checkpoint();
     await client.sign();
@@ -81,8 +104,7 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     }
     if (!verified) throw new Error('签到未确认到账，任务已停止');
     log('签到完成');
-    current = snapshot(await client.tasks(), account);
-    onSnapshot(current);
+    record(snapshot(await client.tasks(), account));
   } else log('今天已签到');
 
   for (const id of shareIds) {
@@ -98,16 +120,16 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     let settled = false;
     for (const delay of delays) {
       await sleep(delay);
-      current = snapshot(await client.tasks(), account);
-      onSnapshot(current);
+      record(snapshot(await client.tasks(), account));
       if (current.tasks.find(task => task.id === id)!.state === 'finish') { settled = true; break; }
     }
     if (!settled) throw new Error(`${names[id]}上报后未结算，请稍后重新检查`);
     log(`${names[id]}完成`);
   }
   const after = await inspect(client, account, now);
+  record(after);
   if (!after.signed || shareIds.some(id => after.tasks.find(task => task.id === id)!.state !== 'finish')) {
     throw new Error('最终状态未通过检查，可能跨日或任务状态已变化');
   }
-  return { completed: true, expDelta: after.exp - before.exp, coinDelta: after.coin - before.coin, snapshot: after };
+  return { completed: true, expDelta, coinDelta: after.coin - before.coin, snapshot: after };
 }

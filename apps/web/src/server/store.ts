@@ -236,9 +236,9 @@ export class Store {
     const result = {
       ...outcome,
       expDelta:
-        outcome.expDelta === undefined && old?.expDelta === undefined
+        outcome.expDelta === undefined || (old !== null && old.expDelta === undefined)
           ? undefined
-          : (outcome.expDelta || 0) + (old?.expDelta || 0),
+          : outcome.expDelta + (old?.expDelta || 0),
       coinDelta:
         outcome.coinDelta === undefined && old?.coinDelta === undefined
           ? undefined

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { LoginFailure, loginFailureSchema } from '@heybox/contracts';
+import { errorDiagnostic, type ErrorDiagnostic } from 'heybox-daily/diagnostics';
 
 export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -9,13 +10,19 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
       cwd: fileURLToPath(new URL('../../../', import.meta.url)),
     });
     let output = ''; let settled = false;
+    let failure: { category: string; diagnostic?: ErrorDiagnostic } | undefined;
+    const action = input && typeof input === 'object' && 'action' in input && ['begin', 'send', 'verify', 'daily'].includes(String(input.action)) ? input.action : 'unknown';
     const kill = () => {
       try { if (child.pid && process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* already exited */ }
     };
     const finish = (error?: Error, value?: T) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
-      if (error) { kill(); reject(error); } else resolve(value!);
+      if (error) {
+        console.warn(JSON.stringify({ event: 'runner_operation_failed', action,
+          category: failure?.category || 'process', diagnostic: failure?.diagnostic || errorDiagnostic(error) }));
+        kill(); reject(error);
+      } else resolve(value!);
     };
     const timer = setTimeout(() => finish(new Error('执行超时')), timeout);
     child.on('error', () => finish(new Error('执行进程无法启动')));
@@ -27,11 +34,11 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
     child.on('exit', code => {
       if (code !== 0) return finish(new Error('执行进程异常退出'));
       try {
-        const parsed = JSON.parse(output) as { ok: boolean; value?: T; error?: string; category?: string; code?: string };
+        const parsed = JSON.parse(output) as { ok: boolean; value?: T; error?: string; category?: string; code?: string; diagnostic?: ErrorDiagnostic };
         if (!parsed.ok) {
           const categories = ['captcha_required', 'native_signer', 'device_token', 'upstream_rate_limit', 'verification_code', 'upstream_http', 'upstream_network', 'upstream_rejected', 'internal'];
-          const category = categories.includes(parsed.category || '') ? parsed.category : 'internal';
-          console.warn(`Runner operation failed: ${category}`);
+          const category = categories.includes(parsed.category || '') ? parsed.category! : 'internal';
+          failure = { category, diagnostic: parsed.diagnostic };
           finish(loginFailureSchema.safeParse(parsed).success ? new LoginFailure() : new Error(parsed.error || '执行失败'));
         }
         else finish(undefined, parsed.value);

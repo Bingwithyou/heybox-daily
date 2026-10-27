@@ -20,6 +20,43 @@ test('child execution has a hard timeout and does not echo credentials on failur
     assert.ok(error instanceof Error); assert.ok(!error.message.includes('private-fixture')); return true;
   });
 });
+test('child login failures log their action and concrete diagnostics without exposing them to callers', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => lines.push(message));
+  const config = { session: { heybox_id: '-1', pkey: 'private-key', device_id: 'private-device', x_xhh_tokenid: 'private-token' },
+    device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
+  await assert.rejects(runChild({ action: 'verify', phone: '13800138000', code: 'invalid-secret', config }), error => {
+    assert.ok(error instanceof Error);
+    assert.ok(!error.message.includes('invalid-secret'));
+    assert.ok(!error.message.includes('4 至 8'));
+    return true;
+  });
+  assert.equal(lines.length, 1);
+  const log = JSON.parse(lines[0]);
+  assert.equal(log.action, 'verify');
+  assert.equal(log.category, 'verification_code');
+  assert.match(log.diagnostic.message, /4 至 8 位数字/);
+  for (const secret of ['13800138000', 'invalid-secret', 'private-key', 'private-device', 'private-token']) assert.ok(!lines[0].includes(secret));
+});
+test('device-token diagnostics survive the child boundary without attempting SMS', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'warn', (message: string) => lines.push(message));
+  const previous = process.env.CHROMIUM_PATH;
+  process.env.CHROMIUM_PATH = '/nonexistent-heybox-test-chromium';
+  try {
+    await assert.rejects(runChild({ action: 'begin', phone: '13800138000' }));
+  } finally {
+    if (previous === undefined) delete process.env.CHROMIUM_PATH;
+    else process.env.CHROMIUM_PATH = previous;
+  }
+  assert.equal(lines.length, 1);
+  const log = JSON.parse(lines[0]);
+  assert.equal(log.action, 'begin');
+  assert.equal(log.category, 'device_token');
+  assert.equal(log.diagnostic.stage, 'executable');
+  assert.match(log.diagnostic.message, /需要 Chromium/);
+  assert.ok(!lines[0].includes('13800138000'));
+});
 test('the login server requires service authentication before parsing or calling upstream', async () => {
   const store = new ChallengeStore({ begin: async () => assert.fail('unexpected login'), send: async () => assert.fail('unexpected captcha'), verify: async () => assert.fail('unexpected verify') });
   const server = createRunnerServer(store, 'a'.repeat(64), Buffer.alloc(32).toString('base64'));

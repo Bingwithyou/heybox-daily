@@ -25,12 +25,14 @@ export interface ShareEvent {
 
 // API fields stay optional where the existing runtime checks handle missing data.
 export interface TaskListResult {
-  user?: { userid?: string | number; username?: string; avatar?: string; level_info?: { exp?: string | number; coin?: string | number } };
+  user?: { userid?: string | number; username?: string; avatar?: string; level_info?: { exp?: string | number; coin?: string | number; level?: string | number; max_exp?: string | number } };
   task_list?: Array<{ title?: string; tasks?: Array<{ title?: string; state?: string; report_extra?: { task_id?: string | number } }> }>;
 }
 export interface TaskSnapshot {
   tasks: Array<{ id: string; title?: string; state?: string }>;
   exp: number;
+  level?: number;
+  maxExp?: number;
   coin: number;
   profile?: AccountProfile;
 }

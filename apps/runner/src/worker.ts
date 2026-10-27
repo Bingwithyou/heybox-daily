@@ -1,5 +1,7 @@
 import { HeyboxApiError, HeyboxClient } from 'heybox-daily/client';
-import { inspect, runDaily } from 'heybox-daily/tasks';
+import { DeviceTokenError } from 'heybox-daily/device-token';
+import { errorDiagnostic } from 'heybox-daily/diagnostics';
+import { experienceDelta, inspect, runDaily } from 'heybox-daily/tasks';
 import type { Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
 import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot } from '@heybox/contracts';
 import { decryptCredential } from './crypto.ts';
@@ -8,6 +10,7 @@ import { loginStep, type LoginInput } from './login.ts';
 
 export function failureCategory(error: unknown) {
   if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';
+  if (error instanceof DeviceTokenError) return 'device_token';
   const text = error instanceof Error ? error.message : '';
   if (/原生签名|签名资源/.test(text)) return 'native_signer';
   if (/设备令牌|官网/.test(text)) return 'device_token';
@@ -35,9 +38,10 @@ async function daily(job: Job): Promise<Outcome> {
   const client = new HeyboxClient(config);
   let before: InspectionSnapshot | undefined;
   let latest: InspectionSnapshot | undefined;
+  let expDelta: number | undefined;
   try {
     const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: () => checkpoint(job),
-      onSnapshot: value => { before ||= value; latest = value; } });
+      onSnapshot: (value, delta) => { before ||= value; latest = value; expDelta = delta; } });
     await checkpoint(job);
     return { status: 'completed', expDelta: result.expDelta, coinDelta: result.coinDelta,
       profile: result.snapshot.profile, snapshot: publicSnapshot(result.snapshot) };
@@ -46,16 +50,29 @@ async function daily(job: Job): Promise<Outcome> {
     if (text === 'cancelled' || text === 'cross_day') return { status: 'cancelled', reason: text };
     if (/登录已过期|登录已失效|设备令牌无效/.test(text)) return { status: 'auth_expired', reason: 'auth_expired' };
     let snapshot: TaskSnapshot | undefined;
-    try { await checkpoint(job); const state = await inspect(client, config.session.heybox_id); latest = state; snapshot = publicSnapshot(state); } catch { /* keep partial result optional */ }
+    try {
+      await checkpoint(job);
+      const state = await inspect(client, config.session.heybox_id);
+      const gain = latest && experienceDelta(latest, state);
+      expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
+      latest = state; snapshot = publicSnapshot(state);
+    } catch { /* keep partial result optional */ }
     return { status: 'failed', reason: 'upstream', snapshot,
-      expDelta: before && latest ? latest.exp - before.exp : undefined, coinDelta: before && latest ? latest.coin - before.coin : undefined };
+      expDelta, coinDelta: before && latest ? latest.coin - before.coin : undefined };
   }
 }
+let secrets: string[] = [];
 async function main() {
   let data = '';
   for await (const chunk of process.stdin) { data += chunk; if (data.length > 16_384) throw new Error('请求过大'); }
   const input = JSON.parse(data) as LoginInput | { action: 'daily'; job: Job };
-  if (input.action === 'begin' || input.action === 'send' || input.action === 'verify') return loginStep(input);
+  if (input.action === 'begin' || input.action === 'send' || input.action === 'verify') {
+    secrets = [input.phone];
+    if ('config' in input) secrets.push(...Object.values(input.config.session));
+    if ('code' in input) secrets.push(input.code);
+    if ('proof' in input && input.proof) secrets.push(input.proof.ticket, input.proof.randstr);
+    return loginStep(input);
+  }
   if (input.action === 'daily') return daily(jobSchema.parse(input.job));
   throw new Error('操作无效');
 }
@@ -64,7 +81,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const message = error instanceof Error ? error.message : '';
     const safe = /验证码.*(?:不正确|错误|过期)|频繁/.test(message) ? '验证码错误、过期或请求过于频繁，请核对后重试' : '小黑盒暂时无法完成登录，请稍后重试';
     const category = failureCategory(error);
-    process.stdout.write(JSON.stringify({ ok: false, error: safe, category,
+    process.stdout.write(JSON.stringify({ ok: false, error: safe, category, diagnostic: errorDiagnostic(error, secrets),
       code: category === 'captcha_required' ? category : undefined }));
   });
 }

@@ -349,6 +349,36 @@ test("retries preserve rewards already confirmed by a partially completed attemp
     f.close();
   }
 });
+test("retries do not turn unknown experience into a confirmed partial total", async () => {
+  for (const [firstDelta, nextDelta] of [
+    [undefined, 30],
+    [30, undefined],
+  ]) {
+    const f = fixture();
+    try {
+      const id = await f.store.enroll(credential("123"));
+      const first = (await f.store.claim())!;
+      await f.store.finish(first.id, first.lease, first.credential.version, {
+        status: "failed",
+        reason: "upstream",
+        expDelta: firstDelta,
+        coinDelta: 200,
+      });
+      f.advance(60_000);
+      const next = (await f.store.claim())!;
+      await f.store.finish(next.id, next.lease, next.credential.version, {
+        status: "completed",
+        expDelta: nextDelta,
+        coinDelta: 0,
+      });
+      const result = (await f.store.dashboard(id))?.today?.result;
+      assert.equal(result?.expDelta, undefined);
+      assert.equal(result?.coinDelta, 200);
+    } finally {
+      f.close();
+    }
+  }
+});
 test("the daily schedule uses Beijing 00:01 across UTC dates", () => {
   assert.equal(beijingDate(Date.parse("2026-10-26T16:01:00Z")), "2026-10-27");
   assert.equal(nextRunAt(Date.parse("2026-10-26T16:00:00Z")), Date.parse("2026-10-26T16:01:00Z"));
