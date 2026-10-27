@@ -171,3 +171,21 @@ test("statistics remain available if the edge cache is unavailable", async () =>
   assert.deepEqual(await response.json(), { accounts: 7 });
   await Promise.all(writes);
 });
+
+test("cached statistics retain the five-minute browser TTL when Cloudflare rewrites headers", async () => {
+  const cached = Response.json(
+    { accounts: 7 },
+    {
+      headers: { "Cache-Control": "public, max-age=14400", Age: "30" },
+    },
+  );
+  const response = await publicStats(
+    new Request("https://site.invalid/api/stats"),
+    {} as Env,
+    { waitUntil: () => assert.fail("cache hits must not write") },
+    { match: async () => cached, put: async () => assert.fail("cache hits must not write") },
+  );
+  assert.equal(response.headers.get("cache-control"), "public, max-age=300");
+  assert.equal(response.headers.get("age"), "30");
+  assert.deepEqual(await response.json(), { accounts: 7 });
+});

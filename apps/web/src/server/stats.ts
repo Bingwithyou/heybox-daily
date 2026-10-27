@@ -10,7 +10,12 @@ export async function publicStats(
   // All visitors share this public value; cookies and query strings are not cache keys.
   const key = new Request(new URL("/api/stats", request.url));
   const cached = await cache.match(key).catch(() => undefined);
-  if (cached) return cached;
+  if (cached) {
+    const response = new Response(cached.body, cached);
+    // Cache API hits can carry the zone's longer Browser Cache TTL.
+    response.headers.set("Cache-Control", "public, max-age=300");
+    return response;
+  }
   const response = Response.json(
     { accounts: await new Store(env.DB).accountCount() },
     { headers: { "Cache-Control": "public, max-age=300" } },
