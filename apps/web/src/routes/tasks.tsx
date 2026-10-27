@@ -10,6 +10,7 @@ import { createDashboardLoader, type DashboardData } from "../lib/dashboard-load
 import { Activities } from "../components/activities";
 import { Rewards } from "../components/rewards";
 import { TaskStatus } from "../components/task-status";
+import { TasksSkeleton } from "../components/tasks-skeleton";
 import { taskStatus } from "../lib/task-status";
 import { dateTime, readableError } from "../lib/utils";
 
@@ -84,17 +85,17 @@ function Dashboard() {
     }
   }
   if (!data || (account && data.account !== account.account))
-    return (
+    return error ? (
       <section className="mx-auto max-w-6xl px-6 py-20 sm:px-8">
-        <p role={error ? "alert" : "status"} className="text-base text-muted-foreground">
-          {error || "正在读取任务…"}
+        <p role="alert" className="text-base text-muted-foreground">
+          {error}
         </p>
-        {error && (
-          <Button className="mt-4" variant="outline" onClick={() => refresh(true)}>
-            重新加载
-          </Button>
-        )}
+        <Button className="mt-4" variant="outline" onClick={() => refresh(true)}>
+          重新加载
+        </Button>
       </section>
+    ) : (
+      <TasksSkeleton />
     );
   const today = data.today;
   const running = today?.status === "running" || today?.status === "queued";

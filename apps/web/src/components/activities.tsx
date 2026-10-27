@@ -4,6 +4,7 @@ import type { ActivityView } from "@heybox/contracts";
 import { client } from "../lib/client";
 import { readableError } from "../lib/utils";
 import { Button } from "./ui/button";
+import { ActivityListSkeleton } from "./tasks-skeleton";
 
 const actionNames = {
   available: "参与",
@@ -125,11 +126,7 @@ export function Activities({ account, expired }: { account: string; expired: boo
                   {error}
                 </p>
               )}
-              {loading && items === null && (
-                <p role="status" className="text-sm text-muted-foreground">
-                  正在读取活动…
-                </p>
-              )}
+              {loading && items === null && <ActivityListSkeleton />}
               {items?.length === 0 && (
                 <p className="border-t py-6 text-muted-foreground">暂无进行中的活动</p>
               )}
