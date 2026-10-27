@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { phoneSchema, type LoginProgress } from "@heybox/contracts";
+import { LoginFailure, phoneSchema, type LoginProgress } from "@heybox/contracts";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { authRequest } from "../lib/client";
@@ -60,6 +60,10 @@ function Login() {
       setSentTo("");
       await applyResult(result);
     } catch (e) {
+      if (e instanceof LoginFailure && e.code === "upstream_rate_limit") {
+        setChallenge(null);
+        setSentTo("");
+      }
       setError(readableError(e));
     } finally {
       setBusy(null);
@@ -85,6 +89,10 @@ function Login() {
       await applyResult(result);
       if (result.status === "captcha") setError("小黑盒要求重新验证，请再次完成人机验证");
     } catch (e) {
+      if (e instanceof LoginFailure && e.code === "upstream_rate_limit") {
+        setChallenge(null);
+        setSentTo("");
+      }
       setError(readableError(e));
     } finally {
       captchaAbort.current = null;

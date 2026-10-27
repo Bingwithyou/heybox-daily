@@ -67,7 +67,6 @@ export function createAuth(env: Env) {
           await limit(`sms:ip:day:${ip}`, 30, 86400_000);
           await limit(`sms:phone:minute:${ctx.body.phone}`, 1, 60_000);
           await limit(`sms:phone:day:${ctx.body.phone}`, 6, 86400_000);
-          await limit("sms:site:hour", 60, 3600_000);
           const binding = [...crypto.getRandomValues(new Uint8Array(32))]
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");

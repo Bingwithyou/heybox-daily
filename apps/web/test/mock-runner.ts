@@ -9,6 +9,7 @@ export function createMockRunner(token: string, key: string, wake = () => {}) {
   const store = new ChallengeStore({
     begin: async (phone) => {
       if (phone === "+8613900000000") throw new LoginFailure();
+      if (phone === "+8613900000004") throw new LoginFailure("upstream_rate_limit");
       const config: Config = {
         session: {
           heybox_id: phone.slice(-5),
@@ -20,11 +21,12 @@ export function createMockRunner(token: string, key: string, wake = () => {}) {
         app: { version: "1.3.398", build: "1142", shaderVersion: "14" },
         profile: { nickname: "测试盒友" },
       };
-      return ["+8613900000001", "+8613900000003"].includes(phone)
+      return ["+8613900000001", "+8613900000003", "+8613900000005"].includes(phone)
         ? { status: "captcha", config, appId: "1234567890" }
         : { status: "sent", config };
     },
-    send: async (config, _phone, proof) => {
+    send: async (config, phone, proof) => {
+      if (phone === "+8613900000005") throw new LoginFailure("upstream_rate_limit");
       if (proof.ticket === "ask-again") return { status: "captcha", config, appId: "1234567890" };
       if (proof.ticket !== "valid-ticket" || proof.randstr !== "valid-randstr")
         throw new Error("wrong proof");

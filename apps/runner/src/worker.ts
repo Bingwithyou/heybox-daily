@@ -82,6 +82,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const safe = /验证码.*(?:不正确|错误|过期)|频繁/.test(message) ? '验证码错误、过期或请求过于频繁，请核对后重试' : '小黑盒暂时无法完成登录，请稍后重试';
     const category = failureCategory(error);
     process.stdout.write(JSON.stringify({ ok: false, error: safe, category, diagnostic: errorDiagnostic(error, secrets),
-      code: category === 'captcha_required' ? category : undefined }));
+      code: category === 'captcha_required' || category === 'upstream_rate_limit' ? category : undefined }));
   });
 }

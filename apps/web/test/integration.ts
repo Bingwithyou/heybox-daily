@@ -252,6 +252,36 @@ await assert.rejects(a.rpc.dashboard(), /请先登录/);
 assert.equal((await b.rpc.dashboard()).today?.status, "completed");
 await b.rpc.deleteAccount({ confirm: true });
 await assert.rejects(b.rpc.dashboard(), /请先登录/);
+// These calls stay inside the local mock runner; no real SMS is sent.
+const limited = new Browser();
+const response = await limited.auth("heybox/send-code", { phone: "13900000004" });
+assert.equal(response.status, 400);
+const error = (await response.json()) as { code: string; message: string };
+assert.equal(error.code, "upstream_rate_limit");
+assert.match(error.message, /小黑盒.*频繁.*稍后/);
+assert.ok(!error.message.includes("人机验证"));
+assert.equal(
+  (await new Browser().auth("heybox/send-code", { phone: "13900000004" })).status,
+  429,
+  "the phone limit remains in effect across IPs",
+);
+const limitedCaptcha = await limited.auth("heybox/send-code", { phone: "13900000005" });
+assert.equal(limitedCaptcha.status, 200);
+const limitedChallenge = (await limitedCaptcha.json()) as { challenge: string };
+const limitedResult = await limited.auth("heybox/complete-captcha", {
+  ...proof,
+  challenge: limitedChallenge.challenge,
+});
+assert.equal(limitedResult.status, 400);
+assert.equal(((await limitedResult.json()) as { code: string }).code, "upstream_rate_limit");
+const thirdSend = await limited.auth("heybox/send-code", { phone: "13900000006" });
+assert.equal(thirdSend.status, 200);
+assert.equal(((await thirdSend.json()) as { retryAfter: number }).retryAfter, 60);
+assert.equal(
+  (await limited.auth("heybox/send-code", { phone: "13900000007" })).status,
+  429,
+  "the IP limit remains in effect across phones",
+);
 console.log(
-  "PASS: local D1 + Better Auth + oRPC + runner login, cookies, replay prevention, two-user isolation, jobs, pause and deletion",
+  "PASS: local D1 + Better Auth + oRPC + runner login, cookies, replay prevention, two-user isolation, jobs, pause, deletion and SMS quota boundaries",
 );

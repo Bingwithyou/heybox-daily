@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Config } from 'heybox-daily/types';
 import { normalizePhone } from 'heybox-daily/login';
-import { captchaAppIdSchema, captchaProofSchema, type CaptchaProof, type LoginProgress } from '@heybox/contracts';
+import { captchaAppIdSchema, captchaProofSchema, LoginFailure, type CaptchaProof, type LoginProgress } from '@heybox/contracts';
 
 export type LoginStep = { status: 'sent' | 'authenticated'; config: Config } | { status: 'captcha'; appId: string; config: Config };
 type Phase = { status: 'sent' } | { status: 'captcha'; operation: 'send' | 'verify'; appId: string; code?: string };
@@ -93,11 +93,14 @@ export class ChallengeStore {
         : await this.options.verify(value.config, value.phone, phase.code!, proof);
       return this.accept(id, value, result, phase.operation, phase.code);
     } catch (error) {
+      if (phase.operation === 'send' && error instanceof LoginFailure && error.code === 'upstream_rate_limit') {
+        this.remove(id); throw error;
+      }
       if (value.captchaAttempts >= 3 || value.attempts >= 3 || value.expiresAt <= this.now()) this.remove(id);
       else if (phase.operation === 'verify' && this.pending.get(id) === value) {
         value.phase = { status: 'sent' };
         return { status: 'sent', challenge: id, expiresAt: value.expiresAt, retryAfter: 0,
-          message: '验证码未通过或小黑盒暂时不可用，请核对后重试' };
+          message: error instanceof LoginFailure ? error.message : '验证码未通过或小黑盒暂时不可用，请核对后重试' };
       }
       throw error;
     } finally { value.busy = false; this.active--; }

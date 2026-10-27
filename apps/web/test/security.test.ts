@@ -8,6 +8,8 @@ import {
   serviceAuthorized,
 } from "../src/server/security.ts";
 import type { Env } from "../src/server/env.ts";
+import { authRequest } from "../src/lib/client.ts";
+import { LoginFailure } from "@heybox/contracts";
 
 test("service calls use Workers-compatible manual redirects and never follow them with credentials", async () => {
   const original = globalThis.fetch;
@@ -97,4 +99,44 @@ test("runner human-challenge errors keep their safe code instead of becoming a g
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("upstream throttling keeps an actionable message without leaking provider details", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      { code: "upstream_rate_limit", error: "private-provider-details" },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(
+    runnerRequest(
+      { RUNNER_URL: "https://runner.invalid", RUNNER_SERVICE_TOKEN: "test" } as Env,
+      "/login/captcha",
+      {},
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal((error as Error & { code: string }).code, "upstream_rate_limit");
+      assert.match(error.message, /小黑盒.*频繁.*稍后/);
+      assert.ok(!error.message.includes("人机验证"));
+      assert.ok(!error.message.includes("private-provider-details"));
+      return true;
+    },
+  );
+});
+
+test("the browser retains the throttle code so it can exit a rejected CAPTCHA flow", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json(
+      { code: "upstream_rate_limit", message: "private-provider-details" },
+      { status: 400 },
+    ),
+  );
+  await assert.rejects(authRequest("heybox/complete-captcha", {}), (error) => {
+    assert.ok(error instanceof LoginFailure);
+    assert.equal(error.code, "upstream_rate_limit");
+    assert.match(error.message, /小黑盒.*频繁.*稍后/);
+    assert.ok(!error.message.includes("private-provider-details"));
+    return true;
+  });
 });

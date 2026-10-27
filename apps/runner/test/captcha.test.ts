@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChallengeStore, type LoginStep } from '../src/challenges.ts';
 import type { Config } from 'heybox-daily/types';
+import { LoginFailure } from '@heybox/contracts';
 
 const config: Config = { session: { heybox_id: '123', pkey: 'private-key', device_id: 'original-device', x_xhh_tokenid: 'private-token' },
   device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
@@ -113,4 +114,34 @@ test('CAPTCHA continuations share the global two-operation limit with new logins
   await assert.rejects(store.begin('13800138003', binding), /繁忙/);
   releases.forEach(release => release());
   await Promise.all([first, second]);
+});
+
+test('upstream SMS throttling ends the CAPTCHA challenge instead of encouraging another challenge', async () => {
+  let sends = 0;
+  const store = new ChallengeStore({ begin: async () => captcha(), send: async () => {
+    sends++; throw new LoginFailure('upstream_rate_limit');
+  }, verify: async () => authenticated() });
+  const start = await store.begin('13800138000', binding);
+  await assert.rejects(store.completeCaptcha(start.challenge, proof, binding), error =>
+    error instanceof LoginFailure && error.code === 'upstream_rate_limit');
+  await assert.rejects(store.completeCaptcha(start.challenge, { ...proof, ticket: 'another' }, binding), /挑战/);
+  assert.equal(sends, 1);
+});
+
+test('verification throttling preserves the SMS session and the actual error message', async () => {
+  const store = new ChallengeStore({ begin: async () => sent(), send: async () => assert.fail('unexpected SMS'),
+    verify: async (_config, _phone, _code, proof) => {
+      if (!proof) return captcha();
+      throw new LoginFailure('upstream_rate_limit');
+    } });
+  const start = await store.begin('13800138000', binding);
+  assert.equal(start.status, 'sent');
+  if (start.status === 'sent') assert.equal(start.retryAfter, 60);
+  await store.verify(start.challenge, '1234', binding);
+  const retry = await store.completeCaptcha(start.challenge, proof, binding);
+  assert.equal(retry.status, 'sent');
+  if (retry.status === 'sent') {
+    assert.match(retry.message!, /小黑盒.*频繁.*稍后/);
+    assert.ok(!retry.message!.includes('核对'));
+  }
 });

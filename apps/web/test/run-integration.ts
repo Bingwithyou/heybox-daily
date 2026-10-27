@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
@@ -72,6 +72,19 @@ try {
     "--local",
     "--file",
     path.join(web, "migrations/0001_hosting.sql"),
+    ...common,
+  ]).done;
+  // An exhausted legacy site quota must not block unrelated users.
+  const siteQuotaKey = createHmac("sha256", config.vars.BETTER_AUTH_SECRET)
+    .update("sms:site:hour")
+    .digest("hex");
+  await run(wrangler, [
+    "d1",
+    "execute",
+    "heybox-daily",
+    "--local",
+    "--command",
+    `INSERT INTO rate_limits(key,count,expires_at) VALUES('${siteQuotaKey}',60,${Date.now() + 3600_000})`,
     ...common,
   ]).done;
   worker = run(wrangler, [

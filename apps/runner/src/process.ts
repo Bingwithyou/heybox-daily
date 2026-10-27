@@ -39,7 +39,8 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
           const categories = ['captcha_required', 'native_signer', 'device_token', 'upstream_rate_limit', 'verification_code', 'upstream_http', 'upstream_network', 'upstream_rejected', 'internal'];
           const category = categories.includes(parsed.category || '') ? parsed.category! : 'internal';
           failure = { category, diagnostic: parsed.diagnostic };
-          finish(loginFailureSchema.safeParse(parsed).success ? new LoginFailure() : new Error(parsed.error || '执行失败'));
+          const known = loginFailureSchema.safeParse(parsed);
+          finish(known.success ? new LoginFailure(known.data.code) : new Error(parsed.error || '执行失败'));
         }
         else finish(undefined, parsed.value);
       } catch { finish(new Error('执行响应无效')); }

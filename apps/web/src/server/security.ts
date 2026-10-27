@@ -72,7 +72,7 @@ export async function runnerRequest(env: Env, path: string, input: unknown) {
   if (!response.ok) {
     if (response.status === 400) {
       const failure = loginFailureSchema.safeParse(await response.json().catch(() => null));
-      if (failure.success) throw new LoginFailure();
+      if (failure.success) throw new LoginFailure(failure.data.code);
     }
     throw new Error(`执行端响应 HTTP ${response.status}`);
   }

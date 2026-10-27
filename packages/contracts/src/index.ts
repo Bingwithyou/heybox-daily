@@ -40,10 +40,16 @@ export const beginResultSchema = z.discriminatedUnion('status', [sentResultSchem
 export type LoginProgress = z.infer<typeof beginResultSchema>;
 export const runnerLoginResultSchema = z.discriminatedUnion('status', [sentResultSchema, captchaResultSchema,
   z.object({ status: z.literal('authenticated'), credential: credentialSchema })]);
-export const loginFailureSchema = z.object({ code: z.literal('captcha_required') });
+const loginFailureMessages = {
+  captcha_required: '请先完成人机验证，再继续登录',
+  upstream_rate_limit: '小黑盒验证码请求过于频繁，请稍后再试',
+};
+export const loginFailureSchema = z.object({ code: z.enum(['captcha_required', 'upstream_rate_limit']) });
 export class LoginFailure extends Error {
-  readonly code = 'captcha_required' as const;
-  constructor() { super('小黑盒要求完成人机验证，当前登录未完成'); }
+  readonly code: keyof typeof loginFailureMessages;
+  constructor(code: keyof typeof loginFailureMessages = 'captcha_required') {
+    super(loginFailureMessages[code]); this.code = code;
+  }
 }
 
 export function beijingDate(now = Date.now()) { return new Date(now + 8 * 3600_000).toISOString().slice(0, 10); }
