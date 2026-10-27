@@ -82,10 +82,22 @@ export const jobs = sqliteTable(
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     result: text("result"),
+    queueToken: text("queue_token"),
+    queuePublished: integer("queue_published").notNull().default(0),
+    dispatchUntil: integer("dispatch_until").notNull().default(0),
   },
   (t) => [
     uniqueIndex("jobs_user_day").on(t.userId, t.date),
-    index("jobs_ready").on(t.status, t.availableAt),
+    index("jobs_ready").on(t.status, t.date, t.availableAt, t.createdAt),
+    index("jobs_dispatch").on(
+      t.status,
+      t.date,
+      t.queuePublished,
+      t.availableAt,
+      t.createdAt,
+      t.dispatchUntil,
+    ),
+    index("jobs_queue_token").on(t.queueToken),
   ],
 );
 export const rateLimits = sqliteTable("rate_limits", {

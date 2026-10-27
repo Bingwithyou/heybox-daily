@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHmac, randomBytes } from "node:crypto";
@@ -35,6 +35,7 @@ delete config.userConfigPath;
 // Wrangler rewrites Origin to a configured custom domain even in local mode.
 // Keep the isolated test server on its own loopback origin.
 config.routes = [];
+config.services = [];
 delete config.account_id;
 config.main = path.join(web, "dist/server/index.js");
 config.assets.directory = path.join(web, "dist/client");
@@ -65,15 +66,19 @@ function run(script: string, args: string[], env = process.env) {
 }
 let worker: ReturnType<typeof run> | undefined;
 try {
-  await run(wrangler, [
-    "d1",
-    "execute",
-    "heybox-daily",
-    "--local",
-    "--file",
-    path.join(web, "migrations/0001_hosting.sql"),
-    ...common,
-  ]).done;
+  for (const migration of (await readdir(path.join(web, "migrations")))
+    .filter((name) => name.endsWith(".sql"))
+    .sort()) {
+    await run(wrangler, [
+      "d1",
+      "execute",
+      "heybox-daily",
+      "--local",
+      "--file",
+      path.join(web, "migrations", migration),
+      ...common,
+    ]).done;
+  }
   // An exhausted legacy site quota must not block unrelated users.
   const exhaustedQuotas = [
     ["sms:site:hour", 60],
@@ -148,6 +153,36 @@ try {
     );
   }
   console.log("PASS: all seven auth limits emit distinct, credential-free diagnostics");
+  const timings = [...worker.output().matchAll(/\{"event":"auth_sms_timing"[^\n]+\}/g)].map(
+    ([line]) =>
+      JSON.parse(line) as {
+        event: string;
+        requestId: string;
+        status: number;
+        durationMs: number;
+        stages: Record<string, number>;
+      },
+  );
+  assert.ok(timings.some((event) => event.status === 200));
+  assert.ok(timings.some((event) => event.status === 400));
+  assert.ok(timings.some((event) => event.status === 429));
+  for (const event of timings) {
+    assert.deepEqual(Object.keys(event).sort(), [
+      "durationMs",
+      "event",
+      "requestId",
+      "stages",
+      "status",
+    ]);
+    assert.match(event.requestId, /^[a-f0-9-]{36}$/);
+    assert.ok(event.durationMs >= 0);
+    for (const value of Object.values(event.stages))
+      assert.ok(Number.isFinite(value) && value >= 0);
+  }
+  assert.ok(!JSON.stringify(timings).includes("139000000"));
+  console.log(
+    "PASS: successful and rejected SMS requests expose correlated, credential-free stage timings",
+  );
   assert.equal(
     notifications,
     14,

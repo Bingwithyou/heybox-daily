@@ -39,3 +39,7 @@ CMD []
 
 FROM runner AS preview-runner
 ENTRYPOINT ["node", "apps/runner/src/preview-main.ts"]
+
+FROM runner AS token-service
+ENV PORT=8789
+ENTRYPOINT ["node", "apps/runner/src/token-main.ts"]

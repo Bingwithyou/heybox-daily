@@ -5,6 +5,33 @@ import type { Env } from "../src/server/env.ts";
 
 const env = { RUNNER_URL: "https://runner.invalid", RUNNER_SERVICE_TOKEN: "a".repeat(64) } as Env;
 
+test("task dispatch switches independently from login and activity migration", async (t) => {
+  let bound = 0;
+  let legacy = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    legacy++;
+    return new Response(null, { status: 204 });
+  });
+  const migrated = {
+    ...env,
+    EXECUTOR_ENABLED: "true",
+    DAILY_EXECUTOR: "legacy",
+    EXECUTOR: {
+      fetch: async () => {
+        bound++;
+        return new Response(null, { status: 204 });
+      },
+    },
+  } as unknown as Env;
+  assert.equal(await notifyRunner(migrated), true);
+  assert.equal(bound, 0);
+  assert.equal(legacy, 1);
+  migrated.DAILY_EXECUTOR = "cloudflare";
+  assert.equal(await notifyRunner(migrated), true);
+  assert.equal(bound, 1);
+  assert.equal(legacy, 1);
+});
+
 test("task notifications use existing service authentication, no account data and a short timeout", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => {

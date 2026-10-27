@@ -8,6 +8,8 @@ import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnaps
 import { decryptCredential } from './crypto.ts';
 import { fileURLToPath } from 'node:url';
 import { loginStep, type LoginInput } from './login.ts';
+import { createActivityFetch, createDailyFetch } from './login-relay.ts';
+import { createDailyCheckpoint } from './checkpoint.ts';
 
 export function failureCategory(error: unknown) {
   if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';
@@ -36,16 +38,17 @@ async function checkpoint(job: Job) {
 }
 async function daily(job: Job): Promise<Outcome & { category?: string }> {
   const config = decryptCredential(job.credential, process.env.CREDENTIAL_KEY || '');
-  const client = new HeyboxClient(config);
+  const client = new HeyboxClient(config, { fetchImpl: createDailyFetch() });
+  const check = createDailyCheckpoint(job.date, () => checkpoint(job));
   let before: InspectionSnapshot | undefined;
   let latest: InspectionSnapshot | undefined;
   let expDelta: number | undefined;
   const execution: NonNullable<Outcome['execution']> = {};
   try {
-    const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: () => checkpoint(job),
+    const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: check,
       onSnapshot: (value, delta) => { before ||= value; latest = value; expDelta = delta; },
       onTask: (id, action) => { execution[id] = action; } });
-    await checkpoint(job);
+    await check(true);
     return { status: 'completed', expDelta: result.expDelta, coinDelta: result.coinDelta,
       batteryDelta: result.batteryDelta, execution,
       profile: result.snapshot.profile, snapshot: publicSnapshot(result.snapshot) };
@@ -55,7 +58,7 @@ async function daily(job: Job): Promise<Outcome & { category?: string }> {
     if (/登录已过期|登录已失效|设备令牌无效/.test(text)) return { status: 'auth_expired', reason: 'auth_expired', execution };
     let snapshot: TaskSnapshot | undefined;
     try {
-      await checkpoint(job);
+      await check(true);
       const state = await inspect(client, config.session.heybox_id);
       const gain = latest && experienceDelta(latest, state);
       expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
@@ -77,7 +80,7 @@ async function main() {
     const request = activityRequestSchema.parse(input.request);
     const config = decryptCredential(request.credential, process.env.CREDENTIAL_KEY || '');
     secrets = Object.values(config.session);
-    const client = new HeyboxClient(config);
+    const client = new HeyboxClient(config, { fetchImpl: createActivityFetch() });
     const check = async () => {
       const response = await fetch(`${process.env.WEBSITE_URL}/internal/activities/check`, { method: 'POST',
         headers: { authorization: `Bearer ${process.env.RUNNER_SERVICE_TOKEN}`, 'content-type': 'application/json' },

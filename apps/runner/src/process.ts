@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { LoginFailure, loginFailureSchema, jobSchema, outcomeSchema, ActivityFailure, activityFailureSchema } from '@heybox/contracts';
 import { errorDiagnostic, type ErrorDiagnostic } from 'heybox-daily/diagnostics';
 import { createLoginLog } from './login-logging.ts';
+import { dailyTransport } from './login-relay.ts';
 
 const categories = ['captcha_required', 'native_signer', 'device_token', 'upstream_rate_limit', 'verification_code', 'upstream_http', 'upstream_network', 'upstream_rejected', 'internal'];
 
@@ -26,7 +27,8 @@ export function runChild<T>(input: unknown, timeout = 240_000): Promise<T> {
       if (settled) return;
       settled = true; clearTimeout(timer);
       const context = loginLog?.(value);
-      const taskContext = job?.success ? { jobId: job.data.id, durationMs: Math.round(performance.now() - started) } : undefined;
+      const taskContext = job?.success ? { jobId: job.data.id, durationMs: Math.round(performance.now() - started),
+        transport: dailyTransport() === 'worker' ? 'cloudflare_worker' : 'direct' } : undefined;
       if (error) {
         console.warn(JSON.stringify({ event: 'runner_operation_failed', action, ...context, ...taskContext,
           ...(context && { outcome: 'failed' }),

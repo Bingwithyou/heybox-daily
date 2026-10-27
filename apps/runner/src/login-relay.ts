@@ -27,3 +27,27 @@ export function createLoginFetch(env: NodeJS.ProcessEnv = process.env, fetchImpl
     }
   };
 }
+
+export function dailyTransport(env: NodeJS.ProcessEnv = process.env) {
+  const mode = env.DAILY_TRANSPORT || 'direct';
+  if (mode !== 'direct' && mode !== 'worker') throw new Error('DAILY_TRANSPORT 必须为 direct 或 worker');
+  if (mode === 'worker' && !loginRelayConfig(env))
+    throw new Error('DAILY_TRANSPORT=worker 需要配置 LOGIN_RELAY_URL 和 LOGIN_RELAY_TOKEN');
+  return mode;
+}
+
+export function createDailyFetch(env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): typeof fetch {
+  return dailyTransport(env) === 'worker' ? createLoginFetch(env, fetchImpl) : fetchImpl;
+}
+
+export function activityTransport(env: NodeJS.ProcessEnv = process.env) {
+  const mode = env.ACTIVITY_TRANSPORT || 'direct';
+  if (mode !== 'direct' && mode !== 'worker') throw new Error('ACTIVITY_TRANSPORT 必须为 direct 或 worker');
+  if (mode === 'worker' && !loginRelayConfig(env))
+    throw new Error('ACTIVITY_TRANSPORT=worker 需要配置 LOGIN_RELAY_URL 和 LOGIN_RELAY_TOKEN');
+  return mode;
+}
+
+export function createActivityFetch(env: NodeJS.ProcessEnv = process.env, fetchImpl: typeof fetch = fetch): typeof fetch {
+  return activityTransport(env) === 'worker' ? createLoginFetch(env, fetchImpl) : fetchImpl;
+}

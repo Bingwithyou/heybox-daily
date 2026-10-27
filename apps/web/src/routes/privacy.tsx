@@ -30,8 +30,8 @@ function Privacy() {
         <section className="space-y-3">
           <h2 className="text-xl font-semibold">登录信息</h2>
           <p>
-            手机号和验证码仅在登录时使用，不写入数据库。验证码挑战最多保留 5
-            分钟，登录态只在执行端解密。
+            手机号和验证码仅用于登录。完成登录和人机验证所需的信息会加密暂存，最多保留 5
+            分钟，登录成功后立即清理。登录态只在执行端解密。
           </p>
         </section>
         <section className="space-y-3">

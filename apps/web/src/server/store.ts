@@ -6,6 +6,7 @@ import {
   type Credential,
   type Job,
   type Outcome,
+  type QueueMessage,
 } from "@heybox/contracts";
 
 export interface Statement {
@@ -112,7 +113,8 @@ export class Store {
     if (retry)
       statements.push(
         this.sql(
-          `UPDATE jobs SET status='queued',attempts=0,available_at=MAX(?,COALESCE(lease_until,0)),updated_at=?
+          `UPDATE jobs SET status='queued',attempts=0,available_at=MAX(?,COALESCE(lease_until,0)),updated_at=?,
+          queue_token=NULL,queue_published=0,dispatch_until=0
       WHERE user_id=? AND date=? AND status IN ('failed','cancelled','auth_expired')
       AND EXISTS(SELECT 1 FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid')`,
           now,
@@ -153,14 +155,27 @@ export class Store {
   }
   private async nextWorkAt() {
     const now = this.now();
+    const date = beijingDate(now);
     const row = await this.sql(
-      `SELECT MIN(CASE WHEN j.date<>? THEN ?
+      // Most claims have immediately available work. Stop at the first indexed candidate;
+      // only calculate every pending deadline when all eligible work is delayed or leased.
+      `SELECT COALESCE((
+        SELECT ? FROM jobs j JOIN hosting h ON h.user_id=j.user_id
+        WHERE j.status='queued' AND j.date=? AND j.available_at<=?
+        AND h.enabled=1 AND h.credential_state='valid'
+        AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?)
+        ORDER BY j.available_at,j.created_at LIMIT 1
+      ),(SELECT MIN(CASE WHEN j.date<>? THEN ?
         WHEN j.status='running' THEN COALESCE(j.lease_until+1,?)
         ELSE MAX(j.available_at,COALESCE((SELECT MAX(other.lease_until)+1 FROM jobs other
           WHERE other.user_id=j.user_id AND other.lease_until>=?),0)) END) AS due
       FROM jobs j JOIN hosting h ON h.user_id=j.user_id
-      WHERE j.status IN ('queued','running') AND h.enabled=1 AND h.credential_state='valid'`,
-      beijingDate(now),
+      WHERE j.status IN ('queued','running') AND h.enabled=1 AND h.credential_state='valid')) AS due`,
+      now,
+      date,
+      now,
+      now,
+      date,
       now,
       now,
       now,
@@ -174,17 +189,91 @@ export class Store {
     const now = this.now();
     await this.db.batch([
       this.sql(
-        `UPDATE jobs SET status='cancelled',updated_at=? WHERE date<>? AND status IN ('queued','running')`,
+        `UPDATE jobs SET status='cancelled',updated_at=? WHERE id IN (
+          SELECT id FROM jobs WHERE status IN ('queued','running') AND date<?
+          UNION ALL
+          SELECT id FROM jobs WHERE status IN ('queued','running') AND date>?
+        )`,
         now,
+        beijingDate(now),
         beijingDate(now),
       ),
       this.sql(
-        `UPDATE jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,lease=NULL,lease_until=NULL,updated_at=?
+        `UPDATE jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,lease=NULL,lease_until=NULL,updated_at=?,
+        queue_token=NULL,queue_published=0,dispatch_until=0,
+        result=CASE WHEN attempts>=3 THEN '{"status":"failed","reason":"timeout"}' ELSE result END
         WHERE status='running' AND lease_until<?`,
         now,
         now,
       ),
     ]);
+  }
+  async reserveDispatch(limit = 100): Promise<QueueMessage[]> {
+    await this.recover();
+    const now = this.now();
+    const token = crypto.randomUUID();
+    const rows = await this.sql(
+      `UPDATE jobs SET queue_token=?,queue_published=0,dispatch_until=? WHERE id IN (
+        SELECT j.id FROM jobs j JOIN hosting h ON h.user_id=j.user_id
+        WHERE j.status='queued' AND j.date=? AND j.queue_published IN (0,1) AND j.available_at<=?
+        AND j.dispatch_until<=? AND h.enabled=1 AND h.credential_state='valid'
+        AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?)
+        ORDER BY j.available_at,j.created_at LIMIT ?
+      ) RETURNING id,queue_token AS token`,
+      token,
+      now + 60_000,
+      beijingDate(now),
+      now,
+      now,
+      now,
+      limit,
+    ).all<QueueMessage>();
+    return rows.results;
+  }
+  async markDispatched(token: string) {
+    // Delivery may have already claimed or finished the task. Never change that new state.
+    // Reconcile an unclaimed message after one hour, including an exhausted dead-letter delivery.
+    await this.sql(
+      "UPDATE jobs SET queue_published=1,dispatch_until=? WHERE queue_token=? AND status='queued'",
+      this.now() + 3600_000,
+      token,
+    ).run();
+  }
+  async claimQueued(message: QueueMessage): Promise<Job | null> {
+    const now = this.now();
+    const lease = crypto.randomUUID();
+    const row = await this.sql(
+      `UPDATE jobs SET status='running',attempts=attempts+1,lease=?,lease_until=?,updated_at=?,
+      version=(SELECT version FROM hosting WHERE user_id=jobs.user_id)
+      WHERE id=? AND queue_token=? AND status='queued' AND attempts<3 AND available_at<=? AND date=?
+      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND enabled=1 AND credential_state='valid')
+      AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=jobs.user_id AND other.lease_until>=?) RETURNING *`,
+      lease,
+      now + 300_000,
+      now,
+      message.id,
+      message.token,
+      now,
+      beijingDate(now),
+      now,
+    ).first<JobRow>();
+    if (!row) return null;
+    const credential = await this.sql(
+      "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND credential_state='valid'",
+      row.user_id,
+      row.version,
+    ).first<Credential>();
+    return credential ? { id: row.id, date: row.date, lease, credential } : null;
+  }
+  async deadLetter(message: QueueMessage) {
+    await this.sql(
+      `UPDATE jobs SET status='failed',result='{"status":"failed","reason":"timeout"}',updated_at=?,
+      queue_token=NULL,queue_published=0,dispatch_until=0
+      WHERE id=? AND queue_token=? AND status='queued'`,
+      this.now(),
+      message.id,
+      message.token,
+    ).run();
   }
   async claim(): Promise<Job | null> {
     if ((await this.nextWorkAt()) > this.now()) return null;
@@ -210,7 +299,7 @@ export class Store {
       return null;
     }
     const credential = await this.sql(
-      "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND enabled=1",
+      "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND credential_state='valid'",
       row.user_id,
       row.version,
     ).first<Credential>();
@@ -219,9 +308,22 @@ export class Store {
   }
   async heartbeat(id: string, lease: string, version: string) {
     const now = this.now();
+    const active = await this.sql(
+      `SELECT lease_until FROM jobs WHERE id=? AND lease=? AND version=? AND status='running' AND lease_until>=? AND date=?
+      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND credential_state='valid')`,
+      id,
+      lease,
+      version,
+      now,
+      beijingDate(now),
+      version,
+    ).first<{ lease_until: number }>();
+    if (!active) return false;
+    if (active.lease_until - now >= 120_000) return true;
+    // Recheck revocation atomically: a relogin or deletion may happen after the read.
     return !!(await this.sql(
       `UPDATE jobs SET lease_until=? WHERE id=? AND lease=? AND version=? AND status='running' AND lease_until>=? AND date=?
-      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND enabled=1 AND credential_state='valid') RETURNING id`,
+      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND credential_state='valid') RETURNING id`,
       now + 300_000,
       id,
       lease,
@@ -282,9 +384,11 @@ export class Store {
     // Both statements share one D1 transaction. The second can only disable the credential version that actually ran.
     await this.db.batch([
       this.sql(
-        `UPDATE jobs SET status=CASE WHEN ?='failed' AND attempts<3 THEN 'queued' ELSE ? END,
-        available_at=? + attempts*60000,result=?,updated_at=?,lease_until=NULL WHERE id=? AND lease=? AND version=? AND status='running'
-        AND lease_until>=? AND date=? AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND enabled=1)`,
+        `UPDATE jobs SET status=CASE WHEN ?='failed' AND attempts<3
+        AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND enabled=1) THEN 'queued' ELSE ? END,
+        available_at=? + attempts*60000,result=?,updated_at=?,lease_until=NULL,
+        queue_token=NULL,queue_published=0,dispatch_until=0 WHERE id=? AND lease=? AND version=? AND status='running'
+        AND lease_until>=? AND date=? AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND credential_state='valid')`,
         outcome.status,
         outcome.status,
         now,
@@ -344,7 +448,7 @@ export class Store {
         ? []
         : [
             this.sql(
-              `UPDATE jobs SET status='cancelled',updated_at=? WHERE user_id=? AND status IN ('queued','running')`,
+              `UPDATE jobs SET status='cancelled',updated_at=? WHERE user_id=? AND status='queued'`,
               now,
               userId,
             ),
@@ -439,5 +543,34 @@ export class Store {
       now,
       limit,
     ).first());
+  }
+  async quotas(rules: ReadonlyArray<{ key: string; limit: number; windowMs: number }>) {
+    if (!rules.length) return null;
+    const now = this.now();
+    // Distinct keys, in evaluation order. Snapshot admission before writing so a
+    // rejected rule leaves all later counters untouched, just like quota() calls.
+    const { results } = await this.sql(
+      `WITH rules(position,key,max_count,window_ms) AS (VALUES ${rules.map((_, i) => `(${i},?,?,?)`).join(",")}),
+      admission AS MATERIALIZED (
+        SELECT rules.*,rate_limits.key IS NULL OR expires_at<=? OR count<max_count AS allowed
+        FROM rules LEFT JOIN rate_limits ON rate_limits.key=rules.key
+      )
+      INSERT INTO rate_limits(key,count,expires_at)
+      SELECT key,1,?+window_ms FROM admission
+      WHERE position<COALESCE((SELECT MIN(position) FROM admission WHERE NOT allowed),?)
+      ON CONFLICT(key) DO UPDATE SET
+        count=CASE WHEN expires_at<=? THEN 1 ELSE count+1 END,
+        expires_at=CASE WHEN expires_at<=? THEN excluded.expires_at ELSE expires_at END
+      RETURNING key`,
+      ...rules.flatMap((rule) => [rule.key, rule.limit, rule.windowMs]),
+      now,
+      now,
+      rules.length,
+      now,
+      now,
+    ).all<{ key: string }>();
+    const admitted = new Set(results.map((row) => row.key));
+    const rejected = rules.findIndex((rule) => !admitted.has(rule.key));
+    return rejected < 0 ? null : rejected;
   }
 }

@@ -43,13 +43,15 @@ test('signed_date must match the current day in Asia/Shanghai', () => {
   assert.equal(signedToday(state, Date.parse('2026-10-26T16:00:00Z')), false);
 });
 test('finished tasks never trigger a sign request or share events', async () => {
+  let checkpoints = 0;
   const client = mockClient({ tasks: async () => result(), signState: async () => state,
     sign: () => assert.fail('unexpected sign'), report: () => assert.fail('unexpected report') });
-  const summary = await runDaily(client, '12345', { now, log: quiet });
+  const summary = await runDaily(client, '12345', { now, log: quiet, checkpoint: async () => { checkpoints++; } });
   assert.equal(summary.completed, true);
   assert.equal(summary.expDelta, 0);
   assert.equal(summary.batteryDelta, 0);
   assert.deepEqual(summary.execution, { sign: 'skipped', '1': 'skipped', '19': 'skipped', '31': 'skipped' });
+  assert.equal(checkpoints, 1, 'skipping completed work needs no additional authorization requests');
 });
 test('experience includes the completed level when it resets on level-up', async () => {
   for (const remaining of [0, 25]) {
@@ -168,6 +170,15 @@ test('revoking a hosted job stops before the next external share action', async 
   await assert.rejects(runDaily(client, '12345', { now, log: quiet, sleep: async () => {},
     checkpoint: async () => { if (events.length) throw new Error('revoked'); } }), /revoked/);
   assert.deepEqual(events.map(event => event.path), ['/share/behavior/show']);
+});
+
+test('skipped tasks do not bypass the check before the next unfinished task', async () => {
+  let checkpoints = 0;
+  const client = mockClient({ tasks: async () => result(['finish', 'waiting', 'finish']), signState: async () => state,
+    web: () => assert.fail('revoked job must not select share content'), report: () => assert.fail('revoked job must not report') });
+  await assert.rejects(runDaily(client, '12345', { now, log: quiet,
+    checkpoint: async () => { if (++checkpoints === 2) throw new Error('revoked'); } }), /revoked/);
+  assert.equal(checkpoints, 2);
 });
 test('post selection includes the feed pull parameters required by the API', async () => {
   const candidate = await selectShare(mockClient({ web: async (endpoint, query) => {

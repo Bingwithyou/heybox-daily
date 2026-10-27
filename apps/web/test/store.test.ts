@@ -1,14 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { Store, type Database, type Statement } from "../src/server/store.ts";
 import { beijingDate, nextRunAt, type Credential } from "@heybox/contracts";
 
 function fixture() {
   const db = new DatabaseSync(":memory:");
   const queries: Array<{ sql: string; values: unknown[] }> = [];
-  db.exec(readFileSync(new URL("../migrations/0001_hosting.sql", import.meta.url), "utf8"));
+  const migrations = new URL("../migrations/", import.meta.url);
+  for (const file of readdirSync(migrations)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()) {
+    db.exec(readFileSync(new URL(file, migrations), "utf8"));
+  }
   class Query implements Statement {
     readonly sql: string;
     values: unknown[] = [];
@@ -59,6 +64,143 @@ function fixture() {
     close: () => db.close(),
   };
 }
+
+test("queue outbox reserves messages once and permits replay only after a lost send lease", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const first = await f.store.reserveDispatch();
+    assert.equal(first.length, 1);
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+    f.advance(61_000);
+    const resent = await f.store.reserveDispatch();
+    assert.equal(resent[0].id, first[0].id);
+    assert.notEqual(resent[0].token, first[0].token);
+    assert.equal(await f.store.claimQueued(first[0]), null);
+    await f.store.markDispatched(resent[0].token);
+    f.advance(1800_000);
+    assert.deepEqual(
+      await f.store.reserveDispatch(),
+      [],
+      "published messages stay in the reliable queue without repeated resends",
+    );
+    const job = await f.store.claimQueued(resent[0]);
+    assert.ok(job);
+    assert.equal(
+      await f.store.claimQueued(resent[0]),
+      null,
+      "duplicate delivery cannot claim the same job",
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("a published message lost after exhausted dead-letter delivery is recovered without accepting its old token", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const [lost] = await f.store.reserveDispatch();
+    await f.store.markDispatched(lost.token);
+    f.advance(3600_001);
+    const recovered = await f.store.reserveDispatch();
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0].id, lost.id);
+    assert.notEqual(recovered[0].token, lost.token);
+    assert.equal(await f.store.claimQueued(lost), null);
+    const job = (await f.store.claimQueued(recovered[0]))!;
+    assert.ok(job);
+    await f.store.finish(job.id, job.lease, job.credential.version, { status: "completed" });
+    f.advance(3600_001);
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+  } finally {
+    f.close();
+  }
+});
+
+test("queue delivery can beat publish bookkeeping and delayed business retries are republished", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const [message] = await f.store.reserveDispatch();
+    const job = (await f.store.claimQueued(message))!;
+    assert.ok(job);
+    await f.store.markDispatched(message.token);
+    assert.equal(
+      await f.store.finish(job.id, job.lease, job.credential.version, {
+        status: "failed",
+        reason: "upstream",
+      }),
+      true,
+    );
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+    f.advance(60_000);
+    const [retry] = await f.store.reserveDispatch();
+    assert.equal(retry.id, message.id);
+    assert.notEqual(retry.token, message.token);
+    assert.equal(await f.store.claimQueued(message), null);
+    const second = (await f.store.claimQueued(retry))!;
+    assert.ok(second);
+    await f.store.finish(second.id, second.lease, second.credential.version, {
+      status: "completed",
+    });
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+  } finally {
+    f.close();
+  }
+});
+
+test("a killed queue consumer recovers only after its lease, with at most three business attempts", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const [message] = await f.store.reserveDispatch();
+      const job = (await f.store.claimQueued(message))!;
+      assert.ok(job);
+      assert.deepEqual(await f.store.reserveDispatch(), []);
+      f.advance(300_001);
+    }
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+    assert.equal((await f.store.dashboard("heybox:123"))?.today?.status, "failed");
+  } finally {
+    f.close();
+  }
+});
+
+test("queue messages cannot revive paused, replaced, deleted or cross-day accounts", async () => {
+  for (const action of ["pause", "relogin", "delete", "cross-day"]) {
+    const f = fixture();
+    try {
+      const id = await f.store.enroll(credential("123"));
+      const [message] = await f.store.reserveDispatch();
+      if (action === "pause") await f.store.setEnabled(id, false);
+      if (action === "relogin") await f.store.enroll(credential("123"));
+      if (action === "delete") await f.store.deleteUser(id);
+      if (action === "cross-day") f.advance(86400_000);
+      assert.equal(await f.store.claimQueued(message), null, action);
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test("dead letters fail only the current unpublished business attempt and allow explicit retry", async () => {
+  const f = fixture();
+  try {
+    const id = await f.store.enroll(credential("123"));
+    const [message] = await f.store.reserveDispatch();
+    await f.store.markDispatched(message.token);
+    await f.store.deadLetter(message);
+    assert.equal((await f.store.dashboard(id))?.today?.status, "failed");
+    await f.store.enqueue(id, true);
+    const [retry] = await f.store.reserveDispatch();
+    await f.store.deadLetter(message);
+    assert.ok(await f.store.claimQueued(retry), "a stale dead letter does not fail a new attempt");
+  } finally {
+    f.close();
+  }
+});
 const credential = (account: string): Credential => ({
   account,
   version: crypto.randomUUID(),
@@ -133,6 +275,97 @@ test("idle retry hints respect delayed retries and a revoked process lease", asy
     assert.equal(f.store.retryAfter, 301);
     f.advance(300_001);
     assert.ok(await f.store.claim());
+  } finally {
+    f.close();
+  }
+});
+
+test("a ready queue of 625 accounts uses indexed order and bounded cross-day cleanup", async () => {
+  const f = fixture();
+  try {
+    for (let n = 0; n < 625; n++) {
+      await f.store.enroll(credential(String(10000 + n)));
+      f.advance(1);
+    }
+    f.queries.length = 0;
+    assert.equal((await f.store.claim())?.credential.account, "10000");
+    const plans = f.queries.map((query) => ({
+      sql: query.sql,
+      details: f.db
+        .prepare(`EXPLAIN QUERY PLAN ${query.sql}`)
+        .all(...(query.values as Array<string | number | null>))
+        .map((row) => String(row.detail)),
+    }));
+    // A LIMIT alone still sorts/scans the queue unless date and ordering share an index.
+    for (const plan of plans.filter(({ sql }) => sql.includes("ORDER BY j.available_at"))) {
+      assert.ok(plan.details.some((detail) => /jobs_ready.*status=\?.*date=\?/.test(detail)));
+      assert.ok(!plan.details.some((detail) => /TEMP B-TREE.*ORDER BY/.test(detail)));
+    }
+    assert.ok(
+      plans[0].details.some((detail) =>
+        /jobs_ready.*status=\?.*date=\?.*available_at</.test(detail),
+      ),
+      "finding immediate work must stop at the first eligible indexed job",
+    );
+    const cleanup = plans.find(({ sql }) => sql.startsWith("UPDATE jobs SET status='cancelled'"))!;
+    assert.ok(
+      cleanup.details.some((detail) => /jobs_(ready|dispatch).*status=\?.*date</.test(detail)),
+    );
+    assert.ok(
+      cleanup.details.some((detail) => /jobs_(ready|dispatch).*status=\?.*date>/.test(detail)),
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("ready work is not delayed by an earlier revoked lease or future retry", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const revoked = (await f.store.claim())!;
+    await f.store.enroll(credential("123"));
+    f.advance(1);
+    await f.store.enroll(credential("456"));
+    f.db
+      .prepare("UPDATE jobs SET available_at=? WHERE user_id='heybox:456'")
+      .run(f.store.now() + 60_000);
+    await f.store.enroll(credential("789"));
+    const ready = (await f.store.claim())!;
+    assert.equal(ready.credential.account, "789");
+    await f.store.finish(ready.id, ready.lease, ready.credential.version, { status: "completed" });
+    assert.equal(await f.store.claim(), null);
+    assert.equal(f.store.retryAfter, 60);
+    f.advance(60_000);
+    assert.equal((await f.store.claim())?.credential.account, "456");
+    assert.equal(
+      await f.store.heartbeat(revoked.id, revoked.lease, revoked.credential.version),
+      false,
+    );
+  } finally {
+    f.close();
+  }
+});
+
+test("cross-day cleanup cancels both older and future jobs without cancelling today's work", async () => {
+  const f = fixture();
+  try {
+    const user = await f.store.enroll(credential("123"));
+    const insert = f.db.prepare(
+      "INSERT INTO jobs(id,user_id,date,status,available_at,created_at,updated_at) VALUES(?,?,?,'queued',0,0,0)",
+    );
+    insert.run("past", user, "2026-10-26");
+    insert.run("future", user, "2026-10-28");
+    const job = (await f.store.claim())!;
+    assert.equal(job.date, "2026-10-27");
+    assert.equal(
+      f.db.prepare("SELECT status FROM jobs WHERE id='past'").get()?.status,
+      "cancelled",
+    );
+    assert.equal(
+      f.db.prepare("SELECT status FROM jobs WHERE id='future'").get()?.status,
+      "cancelled",
+    );
   } finally {
     f.close();
   }
@@ -220,7 +453,7 @@ test("eight parallel claims remain isolated when one account pauses and another 
     await f.store.setEnabled(users[0], false);
     await f.store.enroll(credential("1001"));
     for (const job of jobs) {
-      const active = !["1000", "1001"].includes(job!.credential.account);
+      const active = job!.credential.account !== "1001";
       assert.equal(await f.store.heartbeat(job!.id, job!.lease, job!.credential.version), active);
       assert.equal(
         await f.store.finish(job!.id, job!.lease, job!.credential.version, { status: "completed" }),
@@ -238,6 +471,63 @@ test("eight parallel claims remain isolated when one account pauses and another 
     f.close();
   }
 });
+test("heartbeats validate every call but only renew near expiry", async () => {
+  const f = fixture();
+  try {
+    await f.store.enroll(credential("123"));
+    const job = (await f.store.claim())!;
+    const initial = f.store.now();
+    const leaseUntil = () =>
+      f.db.prepare("SELECT lease_until FROM jobs WHERE id=?").get(job.id)?.lease_until;
+    f.queries.length = 0;
+    for (let i = 0; i < 10; i++) {
+      f.advance(1_000);
+      assert.equal(await f.store.heartbeat(job.id, job.lease, job.credential.version), true);
+    }
+    assert.equal(leaseUntil(), initial + 300_000);
+    assert.ok(f.queries.every(({ sql }) => sql.startsWith("SELECT")));
+    assert.equal(f.queries.length, 10);
+    f.advance(170_001);
+    assert.equal(await f.store.heartbeat(job.id, job.lease, job.credential.version), true);
+    assert.equal(leaseUntil(), f.store.now() + 300_000);
+    assert.equal(f.queries.filter(({ sql }) => sql.startsWith("UPDATE")).length, 1);
+    assert.equal(await f.store.heartbeat(job.id, "wrong-lease", job.credential.version), false);
+    assert.equal(await f.store.heartbeat(job.id, job.lease, "wrong-version"), false);
+    f.advance(300_001);
+    assert.equal(await f.store.heartbeat(job.id, job.lease, job.credential.version), false);
+  } finally {
+    f.close();
+  }
+});
+
+test("heartbeat renewal rechecks revocation after its initial read", async (t) => {
+  const f = fixture();
+  try {
+    const userId = await f.store.enroll(credential("123"));
+    const job = (await f.store.claim())!;
+    f.advance(181_000);
+    const prepare = f.store.db.prepare.bind(f.store.db);
+    let revoked = false;
+    t.mock.method(f.store.db, "prepare", (sql: string) => {
+      const query = prepare(sql);
+      if (sql.startsWith("SELECT lease_until")) {
+        const first = query.first.bind(query);
+        query.first = async <T>() => {
+          const result = await first<T>();
+          f.db.prepare("UPDATE hosting SET version='replacement' WHERE user_id=?").run(userId);
+          revoked = true;
+          return result;
+        };
+      }
+      return query;
+    });
+    assert.equal(await f.store.heartbeat(job.id, job.lease, job.credential.version), false);
+    assert.equal(revoked, true);
+  } finally {
+    f.close();
+  }
+});
+
 test("expired leases recover with a new token and reject the old result", async () => {
   const f = fixture();
   try {
@@ -284,20 +574,23 @@ test("relogin invalidates old work without expiring the new credentials", async 
     f.close();
   }
 });
-test("pause and delete revoke active leases, login expiry pauses future scheduling", async () => {
+test("pause lets running work finish; login expiry and deletion still revoke access", async () => {
   const f = fixture();
   try {
     const id = await f.store.enroll(credential("123"));
     const first = (await f.store.claim())!;
     await f.store.setEnabled(id, false);
-    assert.equal(await f.store.heartbeat(first.id, first.lease, first.credential.version), false);
+    assert.equal(await f.store.heartbeat(first.id, first.lease, first.credential.version), true);
     assert.equal(
       await f.store.finish(first.id, first.lease, first.credential.version, {
-        status: "cancelled",
-        reason: "cancelled",
+        status: "failed",
+        reason: "upstream",
       }),
-      false,
+      true,
     );
+    assert.equal((await f.store.dashboard(id))?.today?.status, "failed");
+    f.advance(60_000);
+    assert.equal(await f.store.claim(), null);
     await f.store.setEnabled(id, true);
     const second = (await f.store.claim())!;
     assert.equal(
@@ -315,6 +608,12 @@ test("pause and delete revoke active leases, login expiry pauses future scheduli
     const third = (await f.store.claim())!;
     await f.store.deleteUser(id);
     assert.equal(await f.store.heartbeat(third.id, third.lease, third.credential.version), false);
+    assert.equal(
+      await f.store.finish(third.id, third.lease, third.credential.version, {
+        status: "completed",
+      }),
+      false,
+    );
     assert.equal(await f.store.claim(), null);
     assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jobs").get()?.n, 0);
   } finally {
@@ -391,6 +690,67 @@ test("quota state reads preserve the original reset deadline and never consume a
     assert.equal(first.retryAt - f.store.now(), 50_000);
     f.advance(50_000);
     assert.deepEqual(await f.store.quotaStates(["phone"]), []);
+  } finally {
+    f.close();
+  }
+});
+test("ordered quotas use one database call and stop consuming after the first rejection", async () => {
+  const rules = [
+    { key: "ip-minute", limit: 3, windowMs: 60_000 },
+    { key: "ip-day", limit: 30, windowMs: 86400_000 },
+    { key: "phone-minute", limit: 1, windowMs: 60_000 },
+    { key: "phone-day", limit: 6, windowMs: 86400_000 },
+  ];
+  for (const blocked of [-1, 0, 1, 2, 3]) {
+    const f = fixture();
+    try {
+      if (blocked >= 0) {
+        const rule = rules[blocked];
+        f.db
+          .prepare("INSERT INTO rate_limits VALUES(?,?,?)")
+          .run(rule.key, rule.limit, f.store.now() + rule.windowMs);
+      }
+      const before = f.queries.length;
+      assert.equal(await f.store.quotas(rules), blocked < 0 ? null : blocked);
+      assert.equal(f.queries.length - before, 1, "four limits require only one D1 round trip");
+      const states = await f.store.quotaStates(rules.map((rule) => rule.key));
+      for (const [index, rule] of rules.entries()) {
+        const state = states.find((value) => value.key === rule.key);
+        assert.equal(
+          state?.count,
+          index === blocked ? rule.limit : blocked < 0 || index < blocked ? 1 : undefined,
+        );
+      }
+    } finally {
+      f.close();
+    }
+  }
+});
+test("ordered quotas preserve concurrent admission, original deadlines and window boundaries", async () => {
+  const f = fixture();
+  const rules = [
+    { key: "ip", limit: 3, windowMs: 60_000 },
+    { key: "phone", limit: 1, windowMs: 60_000 },
+    { key: "daily", limit: 6, windowMs: 86400_000 },
+  ];
+  try {
+    const attempts = await Promise.all(Array.from({ length: 10 }, () => f.store.quotas(rules)));
+    assert.equal(attempts.filter((value) => value === null).length, 1);
+    assert.deepEqual(attempts, [null, 1, 1, 0, 0, 0, 0, 0, 0, 0]);
+    const previous = await f.store.quotaStates(rules.map((rule) => rule.key));
+    assert.equal(previous.find((row) => row.key === "daily")?.count, 1);
+    f.advance(59_999);
+    assert.equal(await f.store.quotas(rules), 0);
+    assert.deepEqual(await f.store.quotaStates(rules.map((rule) => rule.key)), previous);
+    f.advance(1);
+    assert.equal(await f.store.quotas(rules), null);
+    const next = await f.store.quotaStates(rules.map((rule) => rule.key));
+    assert.equal(next.find((row) => row.key === "daily")?.count, 2);
+    assert.equal(
+      next.find((row) => row.key === "daily")?.retryAt,
+      previous.find((row) => row.key === "daily")?.retryAt,
+    );
+    assert.equal(next.find((row) => row.key === "phone")?.retryAt, f.store.now() + 60_000);
   } finally {
     f.close();
   }

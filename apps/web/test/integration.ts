@@ -4,7 +4,7 @@ import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { router } from "../src/server/rpc.ts";
-import { jobSchema, taskIds } from "@heybox/contracts";
+import { jobSchema, taskIds, LoginTiming, loginTimingHeader } from "@heybox/contracts";
 import { decryptCredential } from "../../runner/src/crypto.ts";
 import { smsCooldownSchema, type LoginLimitRule } from "../src/lib/login-cooldown.ts";
 import { verifySeo } from "./seo-integration.ts";
@@ -53,12 +53,23 @@ class Browser {
   rpc: RouterClient<typeof router> = createORPCClient(
     new RPCLink({ url: `${base}/rpc`, fetch: (input, init) => this.fetch(input, init) }),
   );
-  auth(path: string, body: unknown) {
-    return this.fetch(`${base}/api/auth/${path}`, {
+  async auth(path: string, body: unknown) {
+    const response = await this.fetch(`${base}/api/auth/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (path === "heybox/send-code") {
+      assert.match(response.headers.get(loginTimingHeader)!, /^[a-f0-9-]{36}$/);
+      assert.match(response.headers.get("server-timing")!, /app;dur=/);
+      if (response.status === 200) {
+        const timing = new LoginTiming();
+        timing.merge(response.headers.get("server-timing"));
+        for (const stage of ["web_accounts", "sms_quota", "sms_cooldown", "executor"] as const)
+          assert.ok(timing.values[stage]! >= 0, `missing ${stage}`);
+      }
+    }
+    return response;
   }
 }
 async function internal(path: string, body: unknown) {

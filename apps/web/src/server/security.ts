@@ -4,6 +4,8 @@ import {
   loginFailureSchema,
   ActivityFailure,
   activityFailureSchema,
+  LoginTiming,
+  loginTimingHeader,
 } from "@heybox/contracts";
 
 export function sameOrigin(request: Request, siteURL: string) {
@@ -60,31 +62,48 @@ export async function privateKey(value: string, secret: string) {
   const digest = await crypto.subtle.sign("HMAC", key, encoder.encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-export async function runnerRequest(env: Env, path: string, input: unknown) {
-  const url = new URL(env.RUNNER_URL);
-  if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname))
-    throw new Error("执行端必须使用 HTTPS");
-  const response = await fetch(new URL(path, url), {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.RUNNER_SERVICE_TOKEN}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(input),
-    signal: AbortSignal.timeout(120_000),
-    redirect: "manual",
-  });
-  if (!response.ok) {
-    if (path === "/activities" && [400, 409].includes(response.status)) {
-      const failure = activityFailureSchema.safeParse(await response.json().catch(() => null));
-      if (failure.success) throw new ActivityFailure(failure.data.code);
+export async function runnerRequest(
+  env: Env,
+  path: string,
+  input: unknown,
+  backend?: "legacy" | "cloudflare",
+  timing?: LoginTiming,
+) {
+  const started = performance.now();
+  try {
+    const cloudflare =
+      (backend ?? (env.EXECUTOR_ENABLED === "true" ? "cloudflare" : "legacy")) === "cloudflare";
+    if (cloudflare && !env.EXECUTOR) throw new Error("执行 Worker 绑定缺失");
+    const url = new URL(cloudflare ? "https://executor.internal" : env.RUNNER_URL);
+    if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname))
+      throw new Error("执行端必须使用 HTTPS");
+    const request = cloudflare ? env.EXECUTOR!.fetch.bind(env.EXECUTOR!) : fetch;
+    const response = await request(new URL(path, url).toString(), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.RUNNER_SERVICE_TOKEN}`,
+        "content-type": "application/json",
+        ...(timing ? { [loginTimingHeader]: timing.id } : {}),
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(120_000),
+      redirect: "manual",
+    });
+    timing?.merge(response.headers.get("server-timing"));
+    if (!response.ok) {
+      if (path === "/activities" && [400, 409].includes(response.status)) {
+        const failure = activityFailureSchema.safeParse(await response.json().catch(() => null));
+        if (failure.success) throw new ActivityFailure(failure.data.code);
+        throw new Error(`执行端响应 HTTP ${response.status}`);
+      }
+      if (response.status === 400) {
+        const failure = loginFailureSchema.safeParse(await response.json().catch(() => null));
+        if (failure.success) throw new LoginFailure(failure.data.code);
+      }
       throw new Error(`执行端响应 HTTP ${response.status}`);
     }
-    if (response.status === 400) {
-      const failure = loginFailureSchema.safeParse(await response.json().catch(() => null));
-      if (failure.success) throw new LoginFailure(failure.data.code);
-    }
-    throw new Error(`执行端响应 HTTP ${response.status}`);
+    return await response.json();
+  } finally {
+    timing?.add("executor", performance.now() - started);
   }
-  return response.json();
 }

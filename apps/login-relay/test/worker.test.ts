@@ -50,6 +50,39 @@ test('preserves signed query, CAPTCHA proof, form body and needed headers withou
   assert.equal(result.headers.get('cache-control'), 'no-store'); assert.equal(calls, 1);
 });
 
+test('daily endpoints require the exact origin and method and preserve signed requests', async () => {
+  const endpoints = [
+    ['api.xiaoheihe.cn', '/task/sign_v3/sign', 'GET'],
+    ['api.xiaoheihe.cn', '/bbs/app/feeds', 'GET'],
+    ['api.xiaoheihe.cn', '/game/all_recommend/v2', 'GET'],
+    ['api.xiaoheihe.cn', '/bbs/app/link/game/comments', 'GET'],
+    ['api.xiaoheihe.cn', '/game/comment/share_data/', 'GET'],
+    ['data.xiaoheihe.cn', '/account/data_report/', 'POST'],
+    ['api.xiaoheihe.cn', '/store/roll_room_v2/room_list', 'GET'],
+    ['api.xiaoheihe.cn', '/store/roll_room_v2/get_home_info', 'GET'],
+    ['api.xiaoheihe.cn', '/bbs/app/profile/user/profile', 'GET'],
+    ['api.xiaoheihe.cn', '/store/roll_room_v2/data_report', 'POST'],
+    ['api.xiaoheihe.cn', '/bbs/app/profile/follow/user', 'POST'],
+    ['api.xiaoheihe.cn', '/store/roll_room_v2/join', 'POST'],
+  ];
+  for (const [host, path, method] of endpoints) {
+    const value = { ...input, url: `https://${host}${path}?hkey=fixture%2Bsignature&time=123`, method,
+      body: method === 'POST' ? 'data=encrypted%2Breport&key=fixture&sid=fixture' : null };
+    let calls = 0;
+    const response = await handle(request(value), env, async (url, options) => {
+      calls++; assert.equal(String(url), value.url); assert.equal(options?.method, method);
+      assert.equal(options?.body, value.body ?? undefined);
+      assert.equal(new Headers(options?.headers).get('cookie'), input.headers.cookie);
+      assert.equal(new Headers(options?.headers).get('authorization'), null);
+      return Response.json({ status: 'ok', result: {} });
+    });
+    assert.equal(response.status, 200); assert.equal(calls, 1);
+    const otherHost = host === 'api.xiaoheihe.cn' ? 'data.xiaoheihe.cn' : 'api.xiaoheihe.cn';
+    assert.equal((await handle(request({ ...value, url: value.url.replace(host, otherHost) }), env, never)).status, 400);
+    assert.equal((await handle(request({ ...value, method: method === 'GET' ? 'POST' : 'GET', body: method === 'GET' ? '' : null }), env, never)).status, 400);
+  }
+});
+
 test('forwards upstream HTTP errors and does not follow redirects, retry, or expose errors', async () => {
   const rejected = await handle(request(), env, async () => Response.json({ status: 'failed' }, { status: 429 }));
   assert.equal(rejected.status, 429); assert.deepEqual(await rejected.json(), { status: 'failed' });

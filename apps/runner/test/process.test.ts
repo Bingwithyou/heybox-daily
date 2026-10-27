@@ -47,6 +47,73 @@ test('daily failures log measured execution time and rate limits without account
   }
 });
 
+test('daily child uses the Worker relay while lease checks stay on the website', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'info', (line: string) => lines.push(line));
+  const values = { CREDENTIAL_KEY: Buffer.alloc(32, 8).toString('base64'), WEBSITE_URL: 'https://website.invalid',
+    RUNNER_SERVICE_TOKEN: 'service-fixture-'.repeat(3), DAILY_TRANSPORT: 'worker',
+    LOGIN_RELAY_URL: 'https://relay.invalid', LOGIN_RELAY_TOKEN: 'relay-fixture-'.repeat(3), NODE_OPTIONS: '' };
+  const config = { session: { heybox_id: '12345', pkey: 'private-key', device_id: 'private-device', x_xhh_tokenid: 'private-token' },
+    device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
+  const taskResult = { user: { userid: '12345', level_info: { exp: 100, coin: 200 } }, task_list: [{ title: '每日任务', tasks:
+    ['1', '19', '31'].map(id => ({ title: id, state: 'finish', report_extra: { task_id: id } })) }] };
+  const stub = `import { handle } from ${JSON.stringify(new URL('../../login-relay/src/worker.ts', import.meta.url).href)};
+    globalThis.fetch = async (input, options) => {
+      const url = new URL(input);
+      if (url.origin === 'https://website.invalid' && url.pathname === '/internal/heartbeat') return new Response(null, {status:204});
+      if (url.origin !== 'https://relay.invalid') throw Error('Unexpected direct daily request');
+      return handle(new Request(String(input), options), process.env, async target => {
+        const path = new URL(target).pathname;
+        const result = path === '/task/list_v2/' ? ${JSON.stringify(taskResult)}
+          : {state:'ok',signed_date:Math.floor((Date.now()/1000+8*3600)/86400)};
+        return Response.json({status:'ok',result});
+      });
+    };`;
+  values.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --import=data:text/javascript,${encodeURIComponent(stub)}`;
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  Object.assign(process.env, values);
+  try {
+    const job = { id: crypto.randomUUID(), lease: crypto.randomUUID(), date: beijingDate(), credential: encryptCredential(config, values.CREDENTIAL_KEY) };
+    const result = await runChild<{ status: string }>({ action: 'daily', job });
+    assert.equal(result.status, 'completed');
+    assert.equal(JSON.parse(lines[0]).transport, 'cloudflare_worker');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
+test('activity child lists through the Worker and never sends participation requests', async () => {
+  const values = { CREDENTIAL_KEY: Buffer.alloc(32, 8).toString('base64'), WEBSITE_URL: 'https://website.invalid',
+    RUNNER_SERVICE_TOKEN: 'service-fixture-'.repeat(3), ACTIVITY_TRANSPORT: 'worker',
+    LOGIN_RELAY_URL: 'https://relay.invalid', LOGIN_RELAY_TOKEN: 'relay-fixture-'.repeat(3), NODE_OPTIONS: '' };
+  const config = { session: { heybox_id: '12345', pkey: 'private-key', device_id: 'private-device', x_xhh_tokenid: 'private-token' },
+    device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
+  const stub = `import { handle } from ${JSON.stringify(new URL('../../login-relay/src/worker.ts', import.meta.url).href)};
+    globalThis.fetch = async (input, options) => {
+      const url = new URL(input);
+      if (url.origin === 'https://website.invalid' && url.pathname === '/internal/activities/check') return new Response(null, {status:204});
+      if (url.origin !== 'https://relay.invalid') throw Error('Unexpected direct activity request');
+      return handle(new Request(String(input), options), process.env, async (target, upstream) => {
+        if (upstream.method !== 'GET') throw Error('Unexpected participation');
+        const path = new URL(target).pathname;
+        const result = path.endsWith('/room_list') ? [{award_id:123,status:0}]
+          : {logined:true,heybox_id:'12345',joined:false,baned:false,task_list:[],
+            award_info:{award_id:123,award_name:'Fixture activity',status:0}};
+        return Response.json({status:'ok',result});
+      });
+    };`;
+  values.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --import=data:text/javascript,${encodeURIComponent(stub)}`;
+  const previous = Object.fromEntries(Object.keys(values).map(key => [key, process.env[key]]));
+  Object.assign(process.env, values);
+  try {
+    const result = await runChild<{ mode: string; activities: Array<{ id: string }> }>({ action: 'activities',
+      request: { mode: 'list', credential: encryptCredential(config, values.CREDENTIAL_KEY) } });
+    assert.equal(result.mode, 'list'); assert.equal(result.activities[0].id, '123');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  }
+});
+
 test('child execution has a hard timeout and does not echo credentials on failure', async () => {
   await assert.rejects(runChild({ action: 'unknown', secret: 'private-fixture' }, 1), /执行超时/);
   await assert.rejects(runChild({ action: 'unknown', secret: 'private-fixture' }), error => {

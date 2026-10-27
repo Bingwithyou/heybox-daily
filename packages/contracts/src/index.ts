@@ -1,4 +1,5 @@
 import { z } from 'zod';
+export { LoginTiming, loginTimingHeader, type LoginStage } from './login-timing.ts';
 
 export const phoneSchema = z.string().trim().transform(value => /^1[3-9]\d{9}$/.test(value) ? `+86${value}` : value)
   .pipe(z.string().regex(/^\+[1-9]\d{7,14}$/, '请输入有效手机号，海外号码需包含国家或地区区号'));
@@ -54,6 +55,8 @@ export class ActivityFailure extends Error {
 export const jobSchema = z.object({ id: idSchema, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   lease: idSchema, credential: credentialSchema });
 export type Job = z.infer<typeof jobSchema>;
+export const queueMessageSchema = z.object({ id: idSchema, token: idSchema });
+export type QueueMessage = z.infer<typeof queueMessageSchema>;
 export const outcomeSchema = z.object({ status: z.enum(['completed', 'failed', 'auth_expired', 'cancelled']),
   snapshot: snapshotSchema.optional(), expDelta: z.number().optional(), coinDelta: z.number().optional(),
   batteryDelta: z.number().int().optional(), execution: taskExecutionSchema.optional(),

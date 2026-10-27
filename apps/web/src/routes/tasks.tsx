@@ -127,7 +127,11 @@ function Dashboard() {
           />
           {running ? (
             <span role="status" className="text-sm">
-              <TaskStatus status={today!.status} />
+              {!data.enabled && today?.status === "running" ? (
+                "本次执行完成后暂停"
+              ) : (
+                <TaskStatus status={today!.status} />
+              )}
             </span>
           ) : !data.enabled && !expired ? (
             <p className="text-sm text-muted-foreground">已暂停，恢复后补跑今天未完成的任务</p>

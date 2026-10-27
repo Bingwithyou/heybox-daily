@@ -2,7 +2,7 @@
 
 网站提供小黑盒短信登录、每日自动签到和三项分享任务。用户可查看结果、暂停、补跑、重新登录或删除托管数据，赞助页使用仓库内的原图。
 
-`apps/web` 使用 React 19、TanStack Start、Tailwind CSS 4、shadcn/ui base-nova、oRPC、Better Auth 和 Drizzle，运行在 Cloudflare Workers，数据保存在 D1。`apps/runner` 运行在 Linux VPS，复用根目录 CLI 的登录和任务逻辑。工程使用 pnpm workspace 和 Vite+。
+`apps/web` 使用 React 19、TanStack Start、Tailwind CSS 4、shadcn/ui base-nova、oRPC、Better Auth 和 Drizzle，运行在 Cloudflare Workers，数据保存在 D1。`apps/executor` 在独立 Worker 中执行每日任务、活动和登录挑战，网站通过 Service Binding 调用；VPS 只运行设备令牌服务及 cloudflared。工程使用 pnpm workspace 和 Vite+，原 runner 保留为回滚实现。
 
 ## 本地检查
 
@@ -13,6 +13,9 @@ pnpm install --frozen-lockfile
 pnpm test
 pnpm --filter @heybox/runner typecheck
 pnpm --filter @heybox/runner test
+pnpm --filter @heybox/executor typecheck
+pnpm --filter @heybox/executor test
+pnpm --filter @heybox/executor test:runtime
 pnpm --filter @heybox/web test
 pnpm --filter @heybox/web build
 pnpm --filter @heybox/web typecheck
@@ -29,6 +32,30 @@ pnpm --filter @heybox/web test:integration
 
 格式化只处理网站：`pnpm --filter @heybox/web exec vp fmt`。不需要改动原有 CLI 或 Python 辅助脚本。
 
+### 发码耗时诊断
+
+`POST /api/auth/heybox/send-code` 返回 `Server-Timing` 和随机的 `x-heybox-request-id`。网站的 `auth_sms_timing`、执行端的 `executor_login` / `executor_login_failed`、VPS 的 `device_token_finished` / `device_token_failed` 使用同一个 `requestId`，可按此关联单次请求。计时包括成功和失败路径；日志不记录手机号、IP、验证码、设备令牌、Cookie 或原始异常内容。
+
+| 指标 | 范围 |
+| --- | --- |
+| `app` | 网站接收请求至准备响应，不含浏览器网络传输 |
+| `auth_quota` | Better Auth 通用接口限流的数据库操作 |
+| `web_accounts` | 账号绑定检查和已登录设备会话读取 |
+| `sms_quota` | 四条短信限流规则的哈希和原子数据库操作 |
+| `sms_cooldown` | 读取最终冷却时间 |
+| `executor` | 网站调用执行端至读完响应 |
+| `challenge_total` | 登录状态对象的总处理时间 |
+| `challenge_load` / `challenge_save` / `challenge_clear` | 短期登录状态的加载、保存和清理；多次操作累计 |
+| `token_http` | 执行端请求 VPS 令牌服务至读完响应 |
+| `token_service` / `token_queue` / `token_generate` | VPS 总处理时间、排队等待和独立进程生成令牌 |
+| `sms_upstream` | 构造签名、请求小黑盒发码并解析业务响应 |
+
+这些指标存在包含关系，不能全部相加：`executor` 包含 `challenge_total`，后者包含 `token_http` 和 `sms_upstream`；`token_http` 又包含 VPS 的处理时间。浏览器总耗时需结合 Network 的请求计时。旧版本服务不返回的指标会缺省，不会伪造为零。
+
+四条短信规则以一次 SQLite 语句原子执行，减少正常发码的限流数据库往返（4 次变为 1 次）。保持规则顺序、额度、窗口和首次拒绝后停止扣减后续规则的语义，不改变验证码重试或冷却时间。无需数据库迁移。
+
+2026-10-28 06:14（北京时间）发布核验：网站版本 `a0f64fd9-cd84-4350-af68-826c1f3bd7e7`、执行 Worker 版本 `1c2664ac-c7ba-48a7-ba5c-49fe904366fa` 均为 100% 部署；VPS 镜像为 `heybox-token:login-performance-20261028`。Linux 登录测试 13 项通过，线上 SDK 请求返回相同关联 ID 和完整令牌计时；无效手机号请求返回 400 并携带网站计时，未发送短信。执行端健康检查与真实账号只读任务核验通过。完整真实发码的提速幅度仍需用后续用户请求测量。
+
 当前 Vite+ 1.4.0 内置 Vite 8.3.5。pnpm 的 `peers check` 会将别名包版本 1.4.0 与插件要求的 Vite 版本比较，因此报告版本不满足；已按 Vite+ 文档配置 overrides，实际构建与本地生产页面验收通过。构建还有首屏包大小及 CSS sourcemap 提示，不影响本版运行。
 
 ## 生产资源
@@ -38,17 +65,57 @@ pnpm --filter @heybox/web test:integration
 | 资源 | 用途 |
 | --- | --- |
 | Worker `heybox-daily` | 网站、用户 API、任务调度 |
+| Worker `heybox-executor` | 内部执行服务，不开放 workers.dev 或公开路由 |
 | D1 `heybox-daily` | 网站会话、加密登录态、任务记录 |
+| Queues `heybox-daily-tasks` / `heybox-daily-dead` | 每日任务投递及死信处理 |
+| Durable Objects `LoginChallenge` / `ActivityGate` | 加密的短期登录挑战、活动限额与账号互斥 |
 | `heybox.cansiny.top` | 网站域名 |
 | Tunnel `heybox-daily-runner` | Worker 到 VPS 的加密连接 |
-| `heybox-runner.cansiny.top` | 执行端服务域名 |
-| VPS 独立 Compose 项目 | runner 和 cloudflared 容器 |
+| `heybox-token.cansiny.top` | 仅提供设备令牌及健康检查，要求独立服务令牌 |
+| `heybox-runner.cansiny.top` | 保留的旧 runner 回滚地址 |
+| VPS Compose 项目 | 令牌服务及 cloudflared；旧 runner 停止并移除运行配置中的账号密钥 |
 
 Tunnel 从 VPS 主动连接 Cloudflare，容器之间使用项目独立网络，无需接管 VPS 的 80 或 443 端口。执行端仍要求服务令牌；浏览器不能直接调用。已有 HTTPS 反向代理也可以使用，`RUNNER_URL` 必须指向经过校验的 HTTPS 服务。
 
 以下步骤会创建资源和发布服务，请在部署授权后执行。Cloudflare 账号需具备 Workers、D1、Tunnel 和对应域名 DNS 的管理权限。
 
 仓库中的 `wrangler.jsonc` 已绑定当前实例。维护该实例时复用现有资源；自行部署时，将 `account_id`、D1 的 `database_id`、域名和服务地址替换为自己的配置。不要重复创建同名资源或沿用他人的资源 ID。
+
+### Cloudflare 执行架构的部署与切换
+
+生产使用 `EXECUTOR_ENABLED=true` 和 `DAILY_EXECUTOR=cloudflare`。前者控制新登录及活动路由，后者控制每日任务通知并禁用旧 `/internal/claim` 入口；执行 Worker 的 `DAILY_ENABLED=true` 控制投递和消费。这三个开关用于分阶段切换，不要只改其中一个就认为迁移完成。
+
+1. 备份 D1、原 Worker 版本与 VPS 配置，应用 `0003_cloudflare_queue.sql`。它只新增投递字段及索引，不改凭据格式。已有安装不要重新生成 `CREDENTIAL_KEY`。
+2. 创建 `heybox-daily-tasks` 和 `heybox-daily-dead`，先以 `DAILY_ENABLED=false` 部署 `apps/executor`。Wrangler 创建 SQLite Durable Object 类并配置队列。主队列每批 1 条、初始最大并发 8；调整 `max_concurrency` 后重新部署，依据排队时间、429 和失败率逐步评估，程序不会自行加压。
+3. 将原 `CREDENTIAL_KEY` 和 `RUNNER_SERVICE_TOKEN` 配置为执行 Worker Secret；生成独立 `TOKEN_SERVICE_TOKEN`，只共享给执行 Worker 和 VPS 令牌服务。网站不持有凭据密钥。Secret 使用交互输入或受保护的 stdin，不放在源码或命令参数中。
+4. 以 Dockerfile 的 `token-service` target 启动 `compose.token.yaml`，环境文件只包含 `TOKEN_SERVICE_TOKEN`、`HOST`、`PORT`。Tunnel 的 `heybox-token.cansiny.top` 指向 `http://token:8789`。令牌服务和 cloudflared 需要共享 Docker 网络；本实例令牌 Compose 加入已有的 `heybox-hosted_default` 外部网络，复用原 Tunnel 容器。
+5. 部署带 `EXECUTOR` Service Binding 的网站，先保持旧路由。检查内部健康接口和只读任务状态，再将 `EXECUTOR_ENABLED` 设为 `true`。新挑战由 Worker 处理，旧挑战按签名 Cookie 记录的后端继续完成；切换至少 5 分钟后再停旧 runner。
+6. 等旧 runner 的在途任务和结果回传结束，再启用执行 Worker 的 `DAILY_ENABLED` 及网站的 `DAILY_EXECUTOR=cloudflare`。检查队列、D1 结果与现有网站会话；不要重置已经完成的当天任务。最后将旧 runner 的密钥配置移入权限为 `600` 的受控回滚备份，移除旧容器，保留令牌服务和 Tunnel。
+
+常用命令（新部署才创建队列，现有实例直接复用）：
+
+```bash
+pnpm --filter @heybox/executor exec wrangler queues create heybox-daily-tasks
+pnpm --filter @heybox/executor exec wrangler queues create heybox-daily-dead
+pnpm --filter @heybox/executor exec wrangler secret put CREDENTIAL_KEY
+pnpm --filter @heybox/executor exec wrangler secret put RUNNER_SERVICE_TOKEN
+pnpm --filter @heybox/executor exec wrangler secret put TOKEN_SERVICE_TOKEN
+pnpm --filter @heybox/executor run deploy
+pnpm --filter @heybox/web build
+pnpm --filter @heybox/web run deploy
+```
+
+登录挑战各自使用一个 Durable Object，手机号、临时配置、必要时保存的验证码及票据哈希在加密后暂存，5 分钟过期并由 alarm 清理。不同挑战的验证码校验互不占用旧 runner 的全局 4 个名额；同一挑战不能并发提交。持久化记录表明上游操作被中断时，挑战失效并要求用户重新开始，不自动重发短信。VPS SDK 仍为 4 并发，另有最多 16 个、等待最长 15 秒的短队列，每个 SDK 子进程最长 30 秒；服务不接收手机号、验证码或账号凭据。
+
+活动仍只由用户操作触发，保留明确的关注确认。全局最多 4 个活动请求，同一账号不能同时执行；90 秒操作截止时间短于 95 秒互斥租约。参与前重新读取上游状态，中断后再次操作也先核实已参与及关注状态。
+
+执行日志仅记录操作类型、任务 ID、有限的结果分类和耗时；不记录手机号、验证码、票据、设备令牌或上游响应原文。`executor_task_finished` 的 `accepted=true` 表示 D1 接受该版本与租约的结果；请求返回 200 本身不代表任务完成。CPU 以 Cloudflare 观测值为准，不能把包含等待时间的 `durationMs` 当作 CPU 时间。
+
+回滚顺序：先关闭 `DAILY_ENABLED`，等待在途任务结束；恢复受控备份中的旧 runner 与密钥配置；将网站每日路由改回 `legacy`。新登录改回旧 runner 后，仍需给已创建的 Worker 挑战保留 5 分钟完成窗口，期间保留 Service Binding。确认新挑战排空后再停执行 Worker。新增 D1 字段和索引可保留，不能通过恢复旧数据库快照回退新产生的用户数据。
+
+### 旧 runner 部署（仅回滚及兼容维护）
+
+以下 VPS 完整执行端说明用于保留旧部署能力；当前生产日常运行使用上面的 Cloudflare 架构。
 
 ### 1. 准备 Cloudflare
 
@@ -139,23 +206,39 @@ pnpm --filter @heybox/web run deploy
 
 公共账号统计使用 5 分钟浏览器和边缘缓存，新增或删除账号后，统计数字可能最多延迟 5 分钟更新；后台标签页暂停刷新。任务页首次读取完整历史，后续轮询只读取当天状态，任务结束、跨日或切换账号时重新读取历史；同一页面不会重叠发送轮询。带 hash 的 `/assets/` 文件使用一年浏览器缓存，发布后通过文件名变化更新。赞助页使用与原图像素一致的无损 WebP，原 PNG 下载链接保留。
 
-首次登录会排队补跑当天任务。登录、恢复自动任务和手动重试入队后，网站会通过现有 Tunnel 通知 runner 立即领取；重复通知只唤醒同一调度循环，不会突破并发上限。只有存在执行名额时才领取，沿用原有账号租约与版本校验。定时触发器每小时第 1 分钟补查，北京时间 00:01 起将启用且尚无当天记录的账号加入队列，同一账号每天只有一条记录。执行前检查小黑盒真实状态，已完成的任务会跳过。
+首次登录会排队补跑当天任务。登录、恢复自动任务和手动重试入库后，网站通过内部 Service Binding 通知执行 Worker 投递。Queues 消息只携带任务 ID 和投递标识，不携带凭据。消费时原子领取 D1 任务，继续核验账号租约、凭据版本及日期；重复消息不能重复领取。网站定时触发器每小时第 1 分钟补查，北京时间 00:01 起将启用且尚无当天记录的账号加入队列，同一账号每天只有一条记录。执行前检查小黑盒真实状态，已完成的任务会跳过。
 
 任务页右上角在排队时显示“等待执行”，实际运行时显示绿色呼吸圆点与“执行中”，结束后恢复下次执行时间。沿用现有轮询，活动任务约每 5 秒更新；用户设置减少动画时圆点静止。
 
 登录完成、恢复和补跑的通知在任务入库后通过 Worker `waitUntil` 执行，不阻塞接口返回；通知仍保留 2 秒超时，失败后由既有的兜底领取机制处理。
 
-runner 启动后立即检查，队列空闲时每 30 分钟兜底检查一次。有通知会提前唤醒；已知的重试时间和未释放租约会缩短等待，不必等满 30 分钟。通知失败不影响已入库的任务，新任务最多等下一次兜底检查。网站或 runner 离线时不能保证这个延迟上限，恢复后会继续检查；服务错误采用最长 30 分钟的退避。
+执行 Worker 每分钟恢复投递失败、到期重试及过期租约。投递先写入 60 秒保留标识，发送成功后登记；发送结果不确定时到期重投。已登记消息正常由 Queues 保留；若一小时仍未领取，恢复扫描更换投递标识并重投，覆盖死信投递也耗尽或消息丢失的情况。正在运行及已完成的任务不重投，旧投递标识不能再领取。消费者先持久化结果再确认消息，停用每日执行时仍记录收到的死信结果。通知丢失时通常由下一次分钟级扫描补投，Cloudflare 或上游故障期间不保证这一延迟。
 
-多个运行任务各自重试结果回传，不共享等待回调；回传结束后才释放执行名额。停止 runner 时停止后续领取，等待已经领取的任务及回传结束，沿用 Compose 的 5 分钟退出宽限期。若停止时已有领取请求发出，该请求返回的任务也会执行并回传。
+每条任务有 4 分钟执行截止时间，网络请求和等待可取消。数据库结果写入短暂失败时先重试；仍失败则重试消息，租约过期后恢复业务任务。超过队列投递次数的消息进入死信队列，只能将匹配投递标识的排队任务标为失败，不能覆盖正在执行或已经完成的结果。
 
-空闲领取使用现有索引查询待执行任务，没有工作时不执行恢复和领取的 UPDATE。过期限流、会话和旧任务每天北京时间 00:01 清理一次。稳定空闲时，每天约 48 次领取、24 次定时调用，约 75 条 SQL；不包含实际任务、失败重试和用户访问，SQL 条数也不等于 D1 计费行数。
+恢复与投递扫描使用状态、日期、可执行时间和投递索引，不扫描已完成历史。执行 Worker 的每分钟扫描每天约 1,440 次，另有网站调度和实际任务查询；SQL 条数不等于 D1 计费行数。过期限流、会话和旧任务每天北京时间 00:01 清理一次。
 
-升级时先更新 runner 再发布网站。领取响应仍为原来的任务或 `null`，空响应通过 `Retry-After` 告知下一次检查时间；新 runner 遇到旧网站未提供该响应头时仍每 10 秒检查，旧 runner 也能读取新网站返回的任务。本次无需数据库迁移。
+有任务排队时，先按当天的可执行时间和创建时间读取首个可领取任务；只有没有立即可执行的任务时才汇总重试和租约期限。跨日恢复使用两个日期范围查询，避免每领一个任务都遍历当天队列。`0002_queue_ready_index.sql` 将原有 `jobs_ready` 索引改为 `(status,date,available_at,created_at)`，不增加每次状态更新需要维护的队列索引数量。发布这项优化前先应用该迁移；它不修改账号或任务数据。回滚代码可保留新索引，若需要恢复旧索引则在维护窗口重建 `(status,available_at)`。
+
+每日任务开始和成功结束时强制远程核验，中途每 30 秒至多核验一次，失败后的补充状态读取前也强制核验；每个步骤仍在本地检查日期。短任务通常只有两次远程核验。网站核验任务、租约、日期、凭据版本及有效性；仅在租约剩余不足 2 分钟时续期至 5 分钟后，续期 UPDATE 再次核验全部条件，防止读取后重新登录或删除仍被续期。暂停不撤销运行中的租约，旧版本结果仍不能覆盖新凭据状态。
+
+升级时先应用上述索引迁移，再更新 runner 和发布网站。领取响应仍为原来的任务或 `null`，空响应通过 `Retry-After` 告知下一次检查时间；新 runner 遇到旧网站未提供该响应头时仍每 10 秒检查，旧 runner 也能读取新网站返回的任务。
 
 短暂失败最多自动尝试 3 次，并延迟重试。登录失效会暂停，不会自动发送短信。重新登录会更新凭据版本；旧进程停止或租约到期前，新任务等待，不会接受旧凭据的任务结果。
 
-暂停或删除会阻止后续步骤，已发送的请求不能撤回。退出登录会暂停当前账号任务并撤销该账号在当前浏览器的网站会话，保留登录态和记录，其他账号不受影响；删除托管数据会撤销该账号所有网站会话并删除登录态及记录。任务记录保留 30 天，手机号和验证码不写入数据库，限流键经过 HMAC 处理。
+暂停会取消排队任务，但已开始的任务继续完成并记录结果；暂停后失败的任务不自动重试。退出登录使用相同暂停规则，并撤销该账号在当前浏览器的网站会话，保留小黑盒登录态和记录，其他账号不受影响。重新登录或删除在下一次核验时阻止旧任务的后续步骤（检查间隔最多 30 秒，已发送的请求不能撤回）；最终写入始终核验当前版本及租约。删除托管数据会撤销该账号所有网站会话并删除登录态及记录。任务记录保留 30 天，手机号和验证码不写入网站 D1；登录挑战在独立 Durable Object 内加密暂存，5 分钟清理。限流键经过 HMAC 处理。
+
+## 2026-10-28 迁移验收记录
+
+北京时间 05:10 核验：网站版本 `ddeac031-5165-4f28-b6a2-fc5cef43d5d3` 和执行 Worker 版本 `0990576c-d777-4fb0-a5b1-30f543b8b8a7` 均为 100% 部署；每日队列最大并发为 8，两个 Worker 的 workers.dev 和预览地址均关闭。D1 已登记 `0003_cloudflare_queue.sql`。
+
+生产旧 runner 已停止并移除；SDK 镜像为 `heybox-token:cloudflare-executor-20261028`，运行环境没有 `CREDENTIAL_KEY` 或 `RUNNER_SERVICE_TOKEN`。VPS 回滚备份位于 `/home/ubuntu/heybox-hosted/private/migration-20261028`，目录权限 `700`、密钥文件 `600`。当前生产账号密钥位于执行 Worker Secret；预发布演示环境保持独立。
+
+验证包括真实 SDK 令牌生成、Worker 使用原密文读取已完成的四项任务、既有浏览器会话和活动列表，以及本地 workerd 的完整模拟任务、真实 D1/Queues、DO 重启恢复、过期清理、8 路独立登录和重复消息去重。执行端与存储的 50 项测试通过，Linux 容器登录测试 13 项通过。网站构建、类型检查、lint 和本次修改文件的格式检查通过；生产公开页面、访客跳转、robots、sitemap 和隐私说明验证通过。
+
+本地完整单元测试最初为 240/241：唯一失败是 Windows 不支持 POSIX `0600` 的既有断言，已在 Linux 容器通过该登录测试。网站端到端业务断言全部通过，但 Windows 临时目录清理阶段出现 `EBUSY`；全库格式检查还有未修改文件的基线差异，本次仅格式化修改文件。
+
+05:10 的实时数据为 620 个开启自动任务且凭据有效的账号，今天全部完成，完成记录的四项任务均已核验，没有排队或运行中的遗漏。本次没有重置已完成记录，也没有为验收发送真实短信或参与活动。切换后的整批每日执行及其 CPU 用量尚未发生，不能把模拟集成或少量生产读取当作整批运行证据。
 
 ## 预发布演示环境
 

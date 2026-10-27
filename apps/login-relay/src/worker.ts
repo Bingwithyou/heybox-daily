@@ -1,9 +1,21 @@
 interface Env { LOGIN_RELAY_TOKEN: string }
 const endpoints = new Map([
-  ['/account/get_login_code/', 'POST'],
-  ['/account/login_code/', 'POST'],
-  ['/task/list_v2/', 'GET'],
-  ['/task/sign_v4/get_sign_state', 'GET'],
+  ['https://api.xiaoheihe.cn/account/get_login_code/', 'POST'],
+  ['https://api.xiaoheihe.cn/account/login_code/', 'POST'],
+  ['https://api.xiaoheihe.cn/task/list_v2/', 'GET'],
+  ['https://api.xiaoheihe.cn/task/sign_v4/get_sign_state', 'GET'],
+  ['https://api.xiaoheihe.cn/task/sign_v3/sign', 'GET'],
+  ['https://api.xiaoheihe.cn/bbs/app/feeds', 'GET'],
+  ['https://api.xiaoheihe.cn/game/all_recommend/v2', 'GET'],
+  ['https://api.xiaoheihe.cn/bbs/app/link/game/comments', 'GET'],
+  ['https://api.xiaoheihe.cn/game/comment/share_data/', 'GET'],
+  ['https://data.xiaoheihe.cn/account/data_report/', 'POST'],
+  ['https://api.xiaoheihe.cn/store/roll_room_v2/room_list', 'GET'],
+  ['https://api.xiaoheihe.cn/store/roll_room_v2/get_home_info', 'GET'],
+  ['https://api.xiaoheihe.cn/bbs/app/profile/user/profile', 'GET'],
+  ['https://api.xiaoheihe.cn/store/roll_room_v2/data_report', 'POST'],
+  ['https://api.xiaoheihe.cn/bbs/app/profile/follow/user', 'POST'],
+  ['https://api.xiaoheihe.cn/store/roll_room_v2/join', 'POST'],
 ]);
 const headerNames = ['accept', 'content-type', 'cookie', 'user-agent', 'origin', 'referer', 'x-requested-with'];
 const json = (error: string, status: number) => Response.json({ error }, { status, headers: { 'cache-control': 'no-store' } });
@@ -43,8 +55,8 @@ export async function handle(request: Request, env: Env, fetchImpl: typeof fetch
     const input = JSON.parse(await boundedBody(request));
     if (!input || typeof input.url !== 'string') return json('invalid_request', 400);
     url = new URL(input.url); method = input.method;
-    if (url.origin !== 'https://api.xiaoheihe.cn' || url.username || url.password || url.hash
-      || !endpoints.has(url.pathname) || endpoints.get(url.pathname) !== method
+    if (url.username || url.password || url.hash
+      || !endpoints.has(url.origin + url.pathname) || endpoints.get(url.origin + url.pathname) !== method
       || !input.headers || typeof input.headers !== 'object' || Array.isArray(input.headers)
       || (method === 'POST' && typeof input.body !== 'string')
       || (method === 'GET' && input.body != null)) return json('invalid_request', 400);

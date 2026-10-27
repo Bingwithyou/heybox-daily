@@ -9,8 +9,39 @@ import {
 } from "../src/server/security.ts";
 import type { Env } from "../src/server/env.ts";
 import { authRequest } from "../src/lib/client.ts";
-import { LoginFailure } from "@heybox/contracts";
+import { LoginFailure, LoginTiming, loginTimingHeader } from "@heybox/contracts";
 import type { SmsCooldown } from "../src/lib/login-cooldown.ts";
+
+test("new operations use the private Worker binding while existing challenges retain their original backend", async (t) => {
+  let bound = 0;
+  let legacy = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    legacy++;
+    return Response.json({ backend: "legacy" });
+  });
+  const env = {
+    RUNNER_URL: "https://runner.invalid",
+    RUNNER_SERVICE_TOKEN: "a".repeat(64),
+    EXECUTOR_ENABLED: "true",
+    EXECUTOR: {
+      fetch: async (input: string, init: RequestInit) => {
+        bound++;
+        assert.equal(new URL(input).pathname, "/login/verify");
+        assert.equal(new Headers(init.headers).get("authorization"), `Bearer ${"a".repeat(64)}`);
+        return Response.json({ backend: "cloudflare" });
+      },
+    },
+  } as unknown as Env;
+  assert.deepEqual(await runnerRequest(env, "/login/verify", {}, "legacy"), { backend: "legacy" });
+  assert.deepEqual(await runnerRequest(env, "/login/verify", {}, "cloudflare"), {
+    backend: "cloudflare",
+  });
+  assert.deepEqual(await runnerRequest(env, "/login/verify", {}), { backend: "cloudflare" });
+  assert.equal(bound, 2);
+  assert.equal(legacy, 1);
+  await assert.rejects(runnerRequest({ ...env, EXECUTOR: undefined }, "/login/verify", {}), /绑定/);
+  assert.equal(legacy, 1, "missing binding cannot silently fall back to the wrong login state");
+});
 
 test("service calls use Workers-compatible manual redirects and never follow them with credentials", async () => {
   const original = globalThis.fetch;
@@ -30,6 +61,29 @@ test("service calls use Workers-compatible manual redirects and never follow the
   } finally {
     globalThis.fetch = original;
   }
+});
+test("login transport correlates and collects downstream timing even when the upstream rejects the request", async () => {
+  const timing = new LoginTiming();
+  const env = {
+    EXECUTOR_ENABLED: "true",
+    RUNNER_SERVICE_TOKEN: "a".repeat(64),
+    EXECUTOR: {
+      fetch: async (_url: string, init: RequestInit) => {
+        assert.equal(new Headers(init.headers).get(loginTimingHeader), timing.id);
+        return Response.json(
+          { code: "upstream_rate_limit", error: "private message" },
+          {
+            status: 400,
+            headers: { "server-timing": "sms_upstream;dur=123.4, unknown;dur=50" },
+          },
+        );
+      },
+    },
+  } as unknown as Env;
+  await assert.rejects(runnerRequest(env, "/login/begin", {}, undefined, timing), LoginFailure);
+  assert.equal(timing.values.sms_upstream, 123.4);
+  assert.ok(timing.values.executor! >= 0);
+  assert.ok(!timing.header().includes("unknown"));
 });
 test("service token, same-origin checks and hashed quotas do not trust user input", async () => {
   const token = "a".repeat(64);

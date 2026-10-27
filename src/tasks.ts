@@ -114,8 +114,8 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
   } else { recordTask('sign', 'skipped'); log('今天已签到'); }
 
   for (const id of shareIds) {
-    await checkpoint();
     if (current.tasks.find(task => task.id === id)!.state === 'finish') { recordTask(id, 'skipped'); log(`${names[id]}已完成，跳过`); continue; }
+    await checkpoint();
     const addition = await selectShare(client, id);
     const sessionId = randomUUID();
     for (const action of ['show', 'tap', 'success'] as const) {

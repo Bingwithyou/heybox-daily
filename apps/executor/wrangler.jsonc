@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "heybox-executor",
+  "account_id": "b844e50c43f36e313952cf13a4dafca7",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "limits": { "cpu_ms": 30000 },
+  "vars": { "DAILY_ENABLED": "true", "TOKEN_SERVICE_URL": "https://heybox-token.cansiny.top" },
+  "d1_databases": [{ "binding": "DB", "database_name": "heybox-daily", "database_id": "b70ffb01-5c23-4971-9b48-0ad92f47e6f6" }],
+  "queues": {
+    "producers": [{ "binding": "DAILY_QUEUE", "queue": "heybox-daily-tasks" }],
+    "consumers": [
+      { "queue": "heybox-daily-tasks", "max_batch_size": 1, "max_batch_timeout": 1, "max_concurrency": 8,
+        "max_retries": 5, "retry_delay": 60, "dead_letter_queue": "heybox-daily-dead" },
+      { "queue": "heybox-daily-dead", "max_batch_size": 10, "max_batch_timeout": 5, "max_concurrency": 1 }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "LOGIN_CHALLENGES", "class_name": "LoginChallenge" },
+      { "name": "ACTIVITY_GATE", "class_name": "ActivityGate" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LoginChallenge", "ActivityGate"] }],
+  "triggers": { "crons": ["* * * * *"] }
+}

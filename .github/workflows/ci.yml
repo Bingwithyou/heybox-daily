@@ -18,6 +18,9 @@ jobs:
       - run: pnpm --filter @heybox/login-relay test:runtime
       - run: pnpm --filter @heybox/runner typecheck
       - run: pnpm --filter @heybox/runner test
+      - run: pnpm --filter @heybox/executor typecheck
+      - run: pnpm --filter @heybox/executor test
+      - run: pnpm --filter @heybox/executor test:runtime
       - run: pnpm --filter @heybox/web test
       - run: pnpm --filter @heybox/web build
       - run: pnpm --filter @heybox/web typecheck

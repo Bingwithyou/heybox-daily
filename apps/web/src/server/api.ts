@@ -1,9 +1,14 @@
 import { RPCHandler } from "@orpc/server/fetch";
-import { finishSchema, heartbeatSchema, activityAccessSchema } from "@heybox/contracts";
+import {
+  finishSchema,
+  heartbeatSchema,
+  activityAccessSchema,
+  type LoginTiming,
+} from "@heybox/contracts";
 import { createAuth } from "./auth.ts";
 import type { Env } from "./env.ts";
 import { router } from "./rpc.ts";
-import { boundedBody, sameOrigin, serviceAuthorized } from "./security.ts";
+import { boundedBody, runnerRequest, sameOrigin, serviceAuthorized } from "./security.ts";
 import { Store } from "./store.ts";
 import { publicStats } from "./stats.ts";
 
@@ -22,6 +27,7 @@ export async function api(
   request: Request,
   env: Env,
   execution: Pick<ExecutionContext, "waitUntil">,
+  loginTiming?: LoginTiming,
 ): Promise<Response | null> {
   const path = new URL(request.url).pathname;
   if (!path.startsWith("/api/") && !path.startsWith("/rpc/") && !path.startsWith("/internal/"))
@@ -44,14 +50,30 @@ export async function api(
     const store = new Store(env.DB);
     try {
       if (path === "/internal/claim") {
+        if (env.DAILY_EXECUTOR === "cloudflare")
+          return Response.json(null, { headers: { "retry-after": "1800" } });
         const job = await store.claim();
         return Response.json(job, {
           headers: job ? {} : { "retry-after": String(store.retryAfter) },
         });
       }
+      if (path === "/internal/executor/health") {
+        return Response.json(await runnerRequest(env, "/health", {}, "cloudflare"));
+      }
       const raw = await request.text();
       if (raw.length > 16_384) return new Response(null, { status: 413 });
       const body = JSON.parse(raw) as unknown;
+      if (path === "/internal/executor/inspect") {
+        const account =
+          body && typeof body === "object" && "account" in body ? body.account : undefined;
+        if (typeof account !== "string" || !/^\d{1,20}$/.test(account))
+          return new Response(null, { status: 400 });
+        const credential = await store.activityCredential(`heybox:${account}`);
+        if (!credential) return new Response(null, { status: 404 });
+        return Response.json(
+          await runnerRequest(env, "/diagnostics/inspect", credential, "cloudflare"),
+        );
+      }
       if (path === "/internal/activities/check") {
         const value = activityAccessSchema.parse(body);
         return new Response(null, {
@@ -94,7 +116,7 @@ export async function api(
   }
   if (path.startsWith("/api/auth/")) {
     if (!authPaths.has(path)) return new Response(null, { status: 404 });
-    return createAuth(env, execution).handler(request);
+    return createAuth(env, execution, loginTiming).handler(request);
   }
   const result = await rpc.handle(request, {
     prefix: "/rpc",

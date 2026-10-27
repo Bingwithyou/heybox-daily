@@ -4,5 +4,8 @@ export interface Env {
   RUNNER_URL: string;
   BETTER_AUTH_SECRET: string;
   RUNNER_SERVICE_TOKEN: string;
+  EXECUTOR?: Fetcher;
+  EXECUTOR_ENABLED?: "true" | "false";
+  DAILY_EXECUTOR?: "legacy" | "cloudflare";
   DEPLOYMENT_ENV?: "staging";
 }

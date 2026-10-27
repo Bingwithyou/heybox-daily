@@ -23,9 +23,12 @@
     },
   ],
   "triggers": { "crons": ["1 * * * *"] },
+  "services": [{ "binding": "EXECUTOR", "service": "heybox-executor" }],
   "vars": {
     "SITE_URL": "https://heybox.cansiny.top",
     "RUNNER_URL": "https://heybox-runner.cansiny.top",
+    "EXECUTOR_ENABLED": "true",
+    "DAILY_EXECUTOR": "cloudflare",
   },
   "env": {
     "staging": {
@@ -42,6 +45,7 @@
         },
       ],
       "triggers": { "crons": [] },
+      "services": [],
       "vars": {
         "DEPLOYMENT_ENV": "staging",
         "SITE_URL": "https://preview.heybox.cansiny.top",

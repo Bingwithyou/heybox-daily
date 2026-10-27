@@ -1,8 +1,8 @@
 # 登录请求转发
 
-托管网站可以让 Runner 通过独立 Cloudflare Worker 访问小黑盒登录接口。签名、设备初始化和临时登录挑战仍在 Runner 执行；腾讯弹窗继续由浏览器展示。发码、验证码校验及登录后的任务列表读取走转发，日常签到/分享和 CLI 不受影响。
+托管网站可以让 Runner 通过独立 Cloudflare Worker 访问小黑盒登录接口，并为每日任务和活动请求分别启用转发。签名、设备初始化和临时登录挑战仍在 Runner 执行；腾讯弹窗继续由浏览器展示。CLI 保持原路径。
 
-`apps/login-relay` 对应 Worker `heybox-login-relay`，只接受带独立服务密钥的 `POST /relay`。允许的目标固定为 `https://api.xiaoheihe.cn` 上的四个接口：
+`apps/login-relay` 对应 Worker `heybox-login-relay`，只接受带独立服务密钥的 `POST /relay`。API 目标固定为 `https://api.xiaoheihe.cn` 上的以下接口：
 
 | 路径 | 方法 |
 | --- | --- |
@@ -10,8 +10,25 @@
 | `/account/login_code/` | POST |
 | `/task/list_v2/` | GET |
 | `/task/sign_v4/get_sign_state` | GET（只读排查） |
+| `/task/sign_v3/sign` | GET |
+| `/bbs/app/feeds` | GET |
+| `/game/all_recommend/v2` | GET |
+| `/bbs/app/link/game/comments` | GET |
+| `/game/comment/share_data/` | GET |
+| `/store/roll_room_v2/room_list` | GET |
+| `/store/roll_room_v2/get_home_info` | GET |
+| `/bbs/app/profile/user/profile` | GET |
+| `/store/roll_room_v2/data_report` | POST |
+| `/bbs/app/profile/follow/user` | POST |
+| `/store/roll_room_v2/join` | POST |
 
-转发保留签名参数、表单、Cookie 和上游响应，包括 `show_captcha`。服务密钥不发给小黑盒。禁止重定向，不缓存、不记录请求内容，输入最多 32 KiB。超时或失败不会自动重发短信，也不会自动转为 VPS 直连。
+分享上报仅允许 `POST https://data.xiaoheihe.cn/account/data_report/`，两个主机的路径白名单不能混用。
+
+`DAILY_TRANSPORT` 默认为 `direct`；设为 `worker` 后，每日任务使用上述转发通道，必须同时配置 `LOGIN_RELAY_URL` 和 `LOGIN_RELAY_TOKEN`。登录路径不受此开关影响。每日任务日志包含 `transport`，Worker 模式为 `cloudflare_worker`。恢复补跑时使用 `TASK_CONCURRENCY=1`，先单账号核验再分批入队；遇到 403、429 或明确限流停止后续补跑。暂停、账号版本、租约和最终任务核验仍由原有 Runner/网站逻辑执行。
+
+`ACTIVITY_TRANSPORT=worker` 使用同一转发通道访问活动列表、详情及参与接口，也要求完整的 `LOGIN_RELAY_*` 配置；默认 `direct`。活动关注和参与仍需要用户主动操作及原有确认。发布后可以只读活动列表验收，无需真实参与。
+
+转发保留签名参数、表单、Cookie 和上游响应，包括 `show_captcha`。服务密钥不发给小黑盒。禁止重定向，不缓存、不记录请求内容，输入最多 32 KiB。超时或失败不会自动重发短信、关注或参与请求，也不会自动转为 VPS 直连。
 
 ## 检查
 
@@ -51,4 +68,4 @@ Worker 使用 Cloudflare 的网络出口，不保证每次请求、每个用户�
 
 ## 回退
 
-同时清空或删除两个 `LOGIN_RELAY_*` 变量并重建 Runner，可恢复直连；也可恢复更新前的镜像和环境备份。无需回滚数据库、撤销网站会话或改动网页代码。应急回退后保留 Worker 以便排查，不自动删除远程资源。
+将 `DAILY_TRANSPORT`、`ACTIVITY_TRANSPORT` 改为 `direct`，并清空或删除两个 `LOGIN_RELAY_*` 变量后重建 Runner，可全部恢复直连；也可恢复更新前的镜像和环境备份。VPS 出口被上游拒绝时应保留已验证的 Worker 转发配置，优先回滚镜像。无需回滚数据库或撤销网站会话。应急回退后保留 Worker 以便排查，不自动删除远程资源。
