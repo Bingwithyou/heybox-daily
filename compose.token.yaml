@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     read_only: true
     env_file: ./private/token.env
+    environment:
+      TOKEN_PREWARM: ${TOKEN_PREWARM:-true}
     ports:
       - "127.0.0.1:8789:8789"
     tmpfs:

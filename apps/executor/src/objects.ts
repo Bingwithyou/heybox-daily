@@ -27,10 +27,16 @@ export class LoginChallenge extends DurableObject<Env> {
         this.challenge = new PersistentChallenge(this.ctx.storage, this.env.CREDENTIAL_KEY, id, loginOperations(this.env));
         await this.challenge.load();
       }));
+      if (action === '/prepare') {
+        // Initialization only: no login state, alarm, token or SMS side effect.
+        return Response.json({ ready: true }, { headers: { 'server-timing': timing.header(), [loginTimingHeader]: timing.id } });
+      }
       let result;
       if (action === '/begin') {
         const value = beginSchema.parse(input);
-        result = await this.challenge!.begin(value.phone, value.binding, timing);
+        const token = input.token;
+        if (token !== undefined && (typeof token !== 'string' || !/^B[A-Za-z0-9+/=_-]{88}$/.test(token))) throw new Error('设备令牌格式无效');
+        result = await this.challenge!.begin(value.phone, value.binding, timing, token as string | undefined);
       } else if (action === '/verify') {
         const value = verifySchema.parse(input);
         result = await this.challenge!.verify(value.code, value.binding, timing);

@@ -32,6 +32,17 @@ interface DeviceTokenOptions { fetchImpl?: typeof fetch; loadSdk?: () => Promise
 type SdkWindow = DOMWindow & { _smConf: typeof publicConfig & { onError(code: unknown): void };
   _smReadyFuncs: Array<() => void>; SMSdk: { getDeviceId?: () => unknown } };
 
+async function loadRuntime() {
+  const [dom, { FingerprintGenerator }] = await Promise.all([import('jsdom'), import('fingerprint-generator')]);
+  return { ...dom, generator: new FingerprintGenerator() };
+}
+let runtime: ReturnType<typeof loadRuntime> | undefined;
+export async function prepareDeviceToken(): Promise<void> {
+  // Only dependencies and the generator are warmed. No fingerprint, DOM, SDK or network yet.
+  runtime ||= loadRuntime();
+  await runtime;
+}
+
 async function downloadSdk(fetchImpl: typeof fetch) {
   const response = await fetchImpl(sdkUrl, { redirect: 'error', signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`设备令牌组件下载失败：HTTP ${response.status}`);
@@ -86,10 +97,9 @@ export async function getDeviceToken(options: DeviceTokenOptions = {}): Promise<
     const source = await (options.loadSdk || (() => downloadSdk(options.fetchImpl || fetch)))();
     stage = 'initialize';
     // Lazy imports keep the daily-task image independent of login dependencies.
-    const [{ JSDOM, ResourceLoader, VirtualConsole }, { FingerprintGenerator }] = await Promise.all([
-      import('jsdom'), import('fingerprint-generator'),
-    ]);
-    const { fingerprint } = new FingerprintGenerator().getFingerprint({
+    await prepareDeviceToken();
+    const { JSDOM, ResourceLoader, VirtualConsole, generator } = await runtime!;
+    const { fingerprint } = generator.getFingerprint({
       browsers: ['chrome'], devices: ['desktop'], operatingSystems: ['linux'], locales: ['zh-CN', 'zh'],
     });
     dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {

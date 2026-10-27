@@ -34,6 +34,12 @@ pnpm --filter @heybox/web test:integration
 
 ### 发码耗时诊断
 
+设备令牌服务默认保留一个只加载依赖和指纹生成器的空闲子进程。它不提前下载 SDK、不生成指纹或令牌；每次请求创建新的指纹和 DOM，子进程只使用一次。空闲、启动中及执行中的子进程合计最多 4 个；完成退出后再补充空闲进程，避免初始化抢占当前请求的 CPU。失败补充有 1 秒退避；30 秒请求上限、断连取消和退出清理仍生效。认证的 `/health` 返回 `pool` 的总进程数、空闲数、就绪数和活跃数，不包含 PID 或凭据。
+
+执行 Worker 默认同时初始化独立登录 DO 和请求 VPS 令牌，两项成功后才调用 DO 的 begin。预备调用不保存手机号或令牌、不设 alarm、不发短信；即使期间 DO 被回收，begin 也会重新加载并持久化状态后再发码。准备或发码失败不自动重发。`executor_login_preparation` 记录 `challenge_prepare`（DO 预备往返）、`login_prepare`（两项并行等待）和 `challenge_begin`（后续发码往返）；并行阶段不可简单相加。
+
+可分别设置 token 服务环境变量 `TOKEN_PREWARM=false`、执行 Worker 变量 `LOGIN_PREPARE_PARALLEL=false` 关闭优化；前者重建 token 容器，后者重新部署 executor。无需数据库迁移。空闲预热约增加 165 MiB VPS 内存，每次发码增加一次 DO 请求；实际耗时及 DO 活跃时长以部署后的测量为准。
+
 `POST /api/auth/heybox/send-code` 返回 `Server-Timing` 和随机的 `x-heybox-request-id`。网站的 `auth_sms_timing`、执行端的 `executor_login` / `executor_login_failed`、VPS 的 `device_token_finished` / `device_token_failed` 使用同一个 `requestId`，可按此关联单次请求。计时包括成功和失败路径；日志不记录手机号、IP、验证码、设备令牌、Cookie 或原始异常内容。
 
 | 指标 | 范围 |
@@ -44,17 +50,22 @@ pnpm --filter @heybox/web test:integration
 | `sms_quota` | 四条短信限流规则的哈希和原子数据库操作 |
 | `sms_cooldown` | 读取最终冷却时间 |
 | `executor` | 网站调用执行端至读完响应 |
+| `challenge_prepare` / `login_prepare` / `challenge_begin` | DO 初始化往返、DO 与令牌的并行等待、后续发码往返 |
 | `challenge_total` | 登录状态对象的总处理时间 |
 | `challenge_load` / `challenge_save` / `challenge_clear` | 短期登录状态的加载、保存和清理；多次操作累计 |
 | `token_http` | 执行端请求 VPS 令牌服务至读完响应 |
 | `token_service` / `token_queue` / `token_generate` | VPS 总处理时间、排队等待和独立进程生成令牌 |
 | `sms_upstream` | 构造签名、请求小黑盒发码并解析业务响应 |
 
-这些指标存在包含关系，不能全部相加：`executor` 包含 `challenge_total`，后者包含 `token_http` 和 `sms_upstream`；`token_http` 又包含 VPS 的处理时间。浏览器总耗时需结合 Network 的请求计时。旧版本服务不返回的指标会缺省，不会伪造为零。
+这些指标存在包含关系，不能全部相加：并行模式下 `executor` 包含 `login_prepare` 和 `challenge_begin`；`login_prepare` 包含重叠执行的 `challenge_prepare` 与 `token_http`，`challenge_begin` 包含 DO 的 `challenge_total` 及其中的 `sms_upstream`。串行回滚模式下 `challenge_total` 才包含 `token_http`。`token_http` 又包含 VPS 的处理时间。浏览器总耗时需结合 Network 的请求计时。旧版本服务不返回的指标会缺省，不会伪造为零。
 
 四条短信规则以一次 SQLite 语句原子执行，减少正常发码的限流数据库往返（4 次变为 1 次）。保持规则顺序、额度、窗口和首次拒绝后停止扣减后续规则的语义，不改变验证码重试或冷却时间。无需数据库迁移。
 
 2026-10-28 06:14（北京时间）发布核验：网站版本 `a0f64fd9-cd84-4350-af68-826c1f3bd7e7`、执行 Worker 版本 `1c2664ac-c7ba-48a7-ba5c-49fe904366fa` 均为 100% 部署；VPS 镜像为 `heybox-token:login-performance-20261028`。Linux 登录测试 13 项通过，线上 SDK 请求返回相同关联 ID 和完整令牌计时；无效手机号请求返回 400 并携带网站计时，未发送短信。执行端健康检查与真实账号只读任务核验通过。完整真实发码的提速幅度仍需用后续用户请求测量。
+
+2026-10-28 06:54 发布预热和并行准备：执行 Worker 版本 `d13be542-7358-4528-a225-d716cce185e0`、网站版本 `68886cde-40ad-4a1d-b1a4-2afb7de5cf0f`，VPS 镜像 `heybox-token:login-preparation-20261028`。令牌服务部署前后各 3 次真实 SDK 请求均成功，生成耗时中位数由 1,679 ms 降至 909 ms；样本少且有上游波动，不代表完整短信登录的提速。请求后恢复为 1 个已就绪空闲子进程，没有复用令牌。
+
+本次验证：Linux 根目录与 runner 共 169 项通过（原生资源校验补齐只读挂载后单独通过）；executor 19 项、网站 80 项单测通过；workerd 的并行准备、DO 重建、加密存储及队列验证通过。Windows 网站集成的业务断言全部通过，但临时目录清理仍有既有 `EBUSY`；根目录权限断言仅在 Linux 通过。网站全量格式检查仍有 49 个未改文件的基线差异，本次未批量格式化。回滚容器配置位于 VPS `/home/ubuntu/heybox-hosted/private/login-preparation-20261028/compose.before.yaml`，旧镜像与前述 Worker 版本保留。
 
 当前 Vite+ 1.4.0 内置 Vite 8.3.5。pnpm 的 `peers check` 会将别名包版本 1.4.0 与插件要求的 Vite 版本比较，因此报告版本不满足；已按 Vite+ 文档配置 overrides，实际构建与本地生产页面验收通过。构建还有首屏包大小及 CSS sourcemap 提示，不影响本版运行。
 

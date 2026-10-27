@@ -1,4 +1,4 @@
-import { beginSchema, verifySchema, completeCaptchaSchema, activityRequestSchema, credentialSchema, ActivityFailure, loginTimingHeader } from '@heybox/contracts';
+import { beginSchema, verifySchema, completeCaptchaSchema, activityRequestSchema, credentialSchema, ActivityFailure, LoginTiming, loginTimingHeader } from '@heybox/contracts';
 import { Store } from '../../web/src/server/store.ts';
 import { serviceAuthorized, boundedBody } from '../../web/src/server/security.ts';
 import { decryptCredential } from '../../runner/src/crypto.ts';
@@ -8,6 +8,7 @@ import { dispatchDue, consume } from './queue.ts';
 import { executeActivity } from './operations.ts';
 import { deadline } from './deadline.ts';
 import type { Env } from './env.ts';
+import { beginPreparedLogin } from './login-preparation.ts';
 export { LoginChallenge, ActivityGate } from './objects.ts';
 
 export default {
@@ -27,7 +28,17 @@ export default {
         const data = path === '/login/begin' ? { ...beginSchema.parse(input), challenge: crypto.randomUUID() }
           : path === '/login/verify' ? verifySchema.parse(input) : path === '/login/captcha' ? completeCaptchaSchema.parse(input) : null;
         if (!data) return new Response(null, { status: 404 });
-        return env.LOGIN_CHALLENGES.get(env.LOGIN_CHALLENGES.idFromName(data.challenge)).fetch(`https://challenge${path.slice(6)}`, {
+        const stub = env.LOGIN_CHALLENGES.get(env.LOGIN_CHALLENGES.idFromName(data.challenge));
+        if (path === '/login/begin' && env.LOGIN_PREPARE_PARALLEL !== 'false' && 'phone' in data) {
+          const timing = new LoginTiming(request.headers.get(loginTimingHeader));
+          try { return await beginPreparedLogin(stub, data, env, timing, request.signal); }
+          catch {
+            console.warn(JSON.stringify({ event: 'executor_login_prepare_failed', requestId: timing.id, stages: timing.values }));
+            return Response.json({ error: '登录准备失败，请稍后重试' }, { status: 400,
+              headers: { 'server-timing': timing.header(), [loginTimingHeader]: timing.id } });
+          }
+        }
+        return stub.fetch(`https://challenge${path.slice(6)}`, {
           method: 'POST', body: JSON.stringify(data), headers: { 'content-type': 'application/json',
             [loginTimingHeader]: request.headers.get(loginTimingHeader) || '' },
         });

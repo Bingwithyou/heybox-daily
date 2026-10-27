@@ -84,6 +84,22 @@ export async function executeActivity(input: ActivityRequest, key: string, store
       : /登录已过期|登录已失效|设备令牌无效/.test(text) ? 'activity_auth' : 'activity_upstream');
   } finally { scope.close(); }
 }
+export async function requestDeviceToken(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERVICE_TOKEN'>,
+  timing: LoginTiming, request: typeof fetch = fetch): Promise<string> {
+  const url = new URL('/token', env.TOKEN_SERVICE_URL);
+  if (url.protocol !== 'https:' || env.TOKEN_SERVICE_TOKEN.length < 32) throw new Error('Invalid token service configuration');
+  return timing.measure('token_http', async () => {
+    const response = await request(url, { method: 'POST', redirect: 'manual',
+      headers: { authorization: `Bearer ${env.TOKEN_SERVICE_TOKEN}`, 'content-type': 'application/json',
+        [loginTimingHeader]: timing.id }, body: '{}' });
+    timing.merge(response.headers.get('server-timing'));
+    if (!response.ok) throw new Error('设备令牌服务暂时繁忙');
+    const result = await response.json() as { token?: string };
+    if (typeof result.token !== 'string' || !/^B[A-Za-z0-9+/=_-]{88}$/.test(result.token)) throw new Error('设备令牌格式无效');
+    return result.token;
+  });
+}
+
 export function loginOperations(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERVICE_TOKEN'>, fetchImpl: typeof fetch = fetch): LoginOperations {
   const operation = async <T>(action: (request: typeof fetch) => Promise<T>): Promise<T> => {
     const scope = deadline(120_000, fetchImpl);
@@ -108,19 +124,8 @@ export function loginOperations(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERV
     }
   };
   return {
-    begin: (phone, timing = new LoginTiming()) => operation(async request => {
-      const url = new URL('/token', env.TOKEN_SERVICE_URL);
-      if (url.protocol !== 'https:' || env.TOKEN_SERVICE_TOKEN.length < 32) throw new Error('Invalid token service configuration');
-      const token = await timing.measure('token_http', async () => {
-        const response = await request(url, { method: 'POST', redirect: 'manual',
-          headers: { authorization: `Bearer ${env.TOKEN_SERVICE_TOKEN}`, 'content-type': 'application/json',
-            [loginTimingHeader]: timing.id }, body: '{}' });
-        timing.merge(response.headers.get('server-timing'));
-        if (!response.ok) throw new Error('设备令牌服务暂时繁忙');
-        const result = await response.json() as { token?: string };
-        if (typeof result.token !== 'string' || !/^B[A-Za-z0-9+/=_-]{88}$/.test(result.token)) throw new Error('设备令牌格式无效');
-        return result.token;
-      });
+    begin: (phone, timing = new LoginTiming(), preparedToken) => operation(async request => {
+      const token = preparedToken ?? await requestDeviceToken(env, timing, request);
       return step('send', request, createLoginConfig(token), phone, timing);
     }),
     send: (config, phone, proof, timing = new LoginTiming()) => operation(request => step('send', request, config, phone, timing, proof)),

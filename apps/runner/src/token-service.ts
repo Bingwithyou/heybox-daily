@@ -60,12 +60,13 @@ async function emptyBody(request: IncomingMessage) {
   const value: unknown = JSON.parse(text || '{}');
   if (!value || Array.isArray(value) || typeof value !== 'object' || Object.keys(value).length) throw new Error('Invalid body');
 }
-export function createTokenServer(queue: TokenQueue, token: string) {
+export function createTokenServer(queue: TokenQueue, token: string, poolState?: () => object) {
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json'); response.setHeader('cache-control', 'no-store');
     if (!authorized(request.headers.authorization, token)) { response.writeHead(401).end('{}'); return; }
     if (request.method !== 'POST') { response.writeHead(405).end('{}'); return; }
-    if (request.url === '/health') { response.end(JSON.stringify({ service: 'device-token', active: queue.active, pending: queue.pending })); return; }
+    if (request.url === '/health') { response.end(JSON.stringify({ service: 'device-token', active: queue.active, pending: queue.pending,
+      ...(poolState ? { pool: poolState() } : {}) })); return; }
     if (request.url !== '/token') { response.writeHead(404).end('{}'); return; }
     try { await emptyBody(request); } catch { response.writeHead(400).end('{}'); return; }
     const controller = new AbortController();

@@ -80,6 +80,7 @@ const options = convertV4MiniflareOptions({ name: 'executor-test', modules: true
     assert.equal(request.headers.get(loginTimingHeader), null);
     const path = url.pathname;
     if (path === '/account/get_login_code/') {
+      assert.ok(request.headers.get('cookie').includes('x_xhh_tokenid=B' + 'a'.repeat(88)), 'only the privately generated token is used');
       const body = new URLSearchParams(await request.text());
       assert.ok(body.get('phone_num').length > 100); assert.ok(!body.get('phone_num').includes('13800138000'));
       return Response.json({ status: 'ok', result: {} });
@@ -134,13 +135,31 @@ try {
   const binding = 'a'.repeat(64);
   const begin = async () => {
     const timing = new LoginTiming();
-    const response = await call('/login/begin', { phone: '13800138000', binding }, timing.id);
+    const response = await call('/login/begin', { phone: '13800138000', binding, token: 'B' + 'z'.repeat(88) }, timing.id);
     assert.equal(response.headers.get(loginTimingHeader), timing.id);
     timing.merge(response.headers.get('server-timing'));
-    for (const stage of ['challenge_load', 'challenge_save', 'challenge_total', 'token_http', 'token_service', 'token_queue', 'token_generate', 'sms_upstream'])
+    for (const stage of ['challenge_load', 'challenge_save', 'challenge_total', 'token_http', 'token_service', 'token_queue', 'token_generate', 'sms_upstream', 'challenge_prepare', 'login_prepare', 'challenge_begin'])
       assert.ok(timing.values[stage] >= 0, `missing ${stage}`);
     const value = await response.json(); assert.equal(response.status, 200, JSON.stringify(value)); assert.equal(value.status, 'sent'); return value;
   };
+  // prepare creates no persistent state and must not contact either upstream service.
+  const prepareId = randomUUID();
+  const prepareNamespace = await runtime.getDurableObjectNamespace('LOGIN_CHALLENGES');
+  const prepareStub = prepareNamespace.get(prepareNamespace.idFromName(prepareId));
+  const beforePrepare = upstreamRequests;
+  assert.equal((await prepareStub.fetch('https://challenge/prepare', { method: 'POST', body: JSON.stringify({ challenge: prepareId }) })).status, 200);
+  assert.deepEqual(await (await prepareStub.fetch('https://challenge/test/storage')).json(), { values: [], alarm: null });
+  assert.equal(upstreamRequests, beforePrepare);
+  await runtime.dispose(); runtime = new Miniflare(options);
+  const resumedNamespace = await runtime.getDurableObjectNamespace('LOGIN_CHALLENGES');
+  const resumedStub = resumedNamespace.get(resumedNamespace.idFromName(prepareId));
+  const resumedBegin = await resumedStub.fetch('https://challenge/begin', { method: 'POST',
+    body: JSON.stringify({ challenge: prepareId, phone: '13800138000', binding, token: 'B' + 'a'.repeat(88) }) });
+  assert.equal(resumedBegin.status, 200, 'begin works after eviction between prepare and begin');
+  assert.equal(upstreamRequests, beforePrepare + 1, 'prepared token avoids a second token-service request');
+  assert.equal((await resumedStub.fetch('https://challenge/begin', { method: 'POST',
+    body: JSON.stringify({ challenge: prepareId, phone: '13800138000', binding, token: 'B' + 'a'.repeat(88) }) })).status, 400);
+  assert.equal(upstreamRequests, beforePrepare + 1, 'duplicate begin cannot resend');
   const first = await begin();
   let namespace = await runtime.getDurableObjectNamespace('LOGIN_CHALLENGES');
   let stub = namespace.get(namespace.idFromName(first.challenge));
@@ -194,6 +213,16 @@ try {
   await producer.send(delivery);
   await new Promise(r => setTimeout(r, 300));
   assert.equal((await db.prepare('SELECT attempts FROM jobs').first()).attempts, 1); assert.equal(reports, 9);
+  // The independent rollback switch retains the previous serial login contract.
+  await runtime.dispose();
+  runtime = new Miniflare({ ...options, workers: options.workers.map(worker => ({ ...worker,
+    config: { ...worker.config, env: { ...worker.config.env, LOGIN_PREPARE_PARALLEL: { type: 'text', value: 'false' } } },
+  })) });
+  const serial = await call('/login/begin', { phone: '13800138000', binding });
+  assert.equal(serial.status, 200);
+  assert.equal((await serial.json()).status, 'sent');
+  assert.match(serial.headers.get('server-timing'), /token_http;dur=/);
+  assert.ok(!serial.headers.get('server-timing').includes('challenge_prepare'));
   console.log(JSON.stringify({ runtime: 'workerd', bundleBytes: compiled.outputFiles[0].contents.length, mockedUpstreamRequests: upstreamRequests,
-    verified: ['atomic ordered quotas under concurrent D1 requests', 'correlated login timings through Worker, DO and token service', 'login RSA and encrypted credentials', 'real SQLite DO restart and alarm cleanup', '8 simultaneous independent logins', 'single challenge exclusion', 'global activity limit and per-account lock', 'D1 outbox and real queue consumption', 'daily four-task observation', 'duplicate delivery ignored'], realUpstreamRequests: 0 }));
+    verified: ['parallel login preparation and rollback switch', 'prepare has no persistent or upstream effects', 'eviction between prepare and begin', 'public inputs cannot replace the private token', 'atomic ordered quotas under concurrent D1 requests', 'correlated login timings through Worker, DO and token service', 'login RSA and encrypted credentials', 'real SQLite DO restart and alarm cleanup', '8 simultaneous independent logins', 'single challenge exclusion', 'global activity limit and per-account lock', 'D1 outbox and real queue consumption', 'daily four-task observation', 'duplicate delivery ignored'], realUpstreamRequests: 0 }));
 } finally { releases.forEach(release => release()); await runtime.dispose(); rmSync(directory, { recursive: true, force: true }); }

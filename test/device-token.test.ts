@@ -1,11 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FingerprintGenerator } from 'fingerprint-generator';
-import { getDeviceToken } from '../dist/device-token.js';
+import { getDeviceToken, prepareDeviceToken } from '../dist/device-token.js';
 import { errorDiagnostic } from '../dist/diagnostics.js';
 
 const token = 'B' + 'a'.repeat(86) + '==';
 const source = (script: string) => async () => script;
+
+test('preparation loads dependencies without creating a fingerprint or executing an SDK', async t => {
+  const generated = t.mock.method(FingerprintGenerator.prototype, 'getFingerprint', () => { throw new Error('Too early'); });
+  await prepareDeviceToken();
+  await prepareDeviceToken();
+  assert.equal(generated.mock.callCount(), 0);
+});
 
 for (const platform of ['Linux x86_64', 'Linux armv81']) {
   test(`runs the SDK with ${platform} and waits for the server token`, async t => {

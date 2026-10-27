@@ -14,7 +14,7 @@ export interface ChallengeStorage {
   transaction<T>(fn: (tx: Pick<ChallengeStorage, 'put' | 'setAlarm'>) => Promise<T>): Promise<T>;
 }
 export interface LoginOperations {
-  begin(phone: string, timing?: LoginTiming): Promise<LoginStep>;
+  begin(phone: string, timing?: LoginTiming, preparedToken?: string): Promise<LoginStep>;
   send(config: Config, phone: string, proof: CaptchaProof, timing?: LoginTiming): Promise<LoginStep>;
   verify(config: Config, phone: string, code: string, proof?: CaptchaProof, timing?: LoginTiming): Promise<LoginStep>;
 }
@@ -91,14 +91,14 @@ export class PersistentChallenge {
     value.config = result.config;
     return this.progress(value);
   }
-  async begin(phone: string, binding: string, timing?: LoginTiming): Promise<LoginProgress> {
+  async begin(phone: string, binding: string, timing?: LoginTiming, preparedToken?: string): Promise<LoginProgress> {
     if (this.state) throw new Error('登录挑战已存在，请勿重复提交');
     const value: State = { phone: normalizePhone(phone), binding, expiresAt: this.now() + 300_000,
       phase: { status: 'initializing' }, attempts: 0, captchaAttempts: 0, usedTickets: [], busy: true };
     this.state = value;
     await this.save(timing);
     try {
-      const result = await this.operations.begin(value.phone, timing);
+      const result = await this.operations.begin(value.phone, timing, preparedToken);
       return await this.accept(value, result, 'send', undefined, timing) as LoginProgress;
     } catch (error) { await this.clear(timing); throw error; }
     finally { if (this.state === value) { value.busy = false; await this.save(timing); } }

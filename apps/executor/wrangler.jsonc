@@ -9,7 +9,7 @@
   "preview_urls": false,
   "observability": { "enabled": true },
   "limits": { "cpu_ms": 30000 },
-  "vars": { "DAILY_ENABLED": "true", "TOKEN_SERVICE_URL": "https://heybox-token.cansiny.top" },
+  "vars": { "DAILY_ENABLED": "true", "TOKEN_SERVICE_URL": "https://heybox-token.cansiny.top", "LOGIN_PREPARE_PARALLEL": "true" },
   "d1_databases": [{ "binding": "DB", "database_name": "heybox-daily", "database_id": "b70ffb01-5c23-4971-9b48-0ad92f47e6f6" }],
   "queues": {
     "producers": [{ "binding": "DAILY_QUEUE", "queue": "heybox-daily-tasks" }],
