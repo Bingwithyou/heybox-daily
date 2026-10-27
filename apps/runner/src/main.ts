@@ -14,11 +14,12 @@ loginRelayConfig();
 const store = new ChallengeStore({ begin: phone => runChild<LoginStep>({ action: 'begin', phone }, 120_000),
   send: (config, phone, proof) => runChild<LoginStep>({ action: 'send', config, phone, proof }, 120_000),
   verify: (config, phone, code, proof) => runChild<LoginStep>({ action: 'verify', config, phone, code, proof }, 120_000) });
-const queue = new TaskQueue({ request,
+const concurrency = Number(process.env.TASK_CONCURRENCY ?? 8);
+const queue = new TaskQueue({ request, concurrency,
   execute: job => runChild<Outcome>({ action: 'daily', job }, 240_000),
   warn: () => console.error('任务服务暂时不可用，稍后重试') });
 const server = createRunnerServer(store, token, key, () => queue.wake());
-server.listen(Number(process.env.PORT || 8788), process.env.HOST || '127.0.0.1', () => console.log('Heybox runner ready'));
+server.listen(Number(process.env.PORT || 8788), process.env.HOST || '127.0.0.1', () => console.log(`Heybox runner ready (task concurrency: ${concurrency})`));
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => { queue.stop(); server.close(); });
 async function request(path: string, body: unknown) {
   return fetch(`${website}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },

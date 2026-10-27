@@ -184,6 +184,36 @@ test("two users cannot read, pause, delete or finish each other through an owner
     f.close();
   }
 });
+test("eight parallel claims remain isolated when one account pauses and another logs in again", async () => {
+  const f = fixture();
+  try {
+    const users = [];
+    for (let n = 0; n < 8; n++) users.push(await f.store.enroll(credential(String(1000 + n))));
+    const jobs = await Promise.all(Array.from({ length: 8 }, () => f.store.claim()));
+    assert.ok(jobs.every(Boolean));
+    assert.equal(new Set(jobs.map((job) => job!.id)).size, 8);
+    assert.equal(await f.store.claim(), null);
+    await f.store.setEnabled(users[0], false);
+    await f.store.enroll(credential("1001"));
+    for (const job of jobs) {
+      const active = !["1000", "1001"].includes(job!.credential.account);
+      assert.equal(await f.store.heartbeat(job!.id, job!.lease, job!.credential.version), active);
+      assert.equal(
+        await f.store.finish(job!.id, job!.lease, job!.credential.version, { status: "completed" }),
+        active,
+      );
+    }
+    const replacement = (await f.store.claim())!;
+    assert.equal(replacement.credential.account, "1001");
+    assert.notEqual(
+      replacement.credential.version,
+      jobs.find((job) => job!.credential.account === "1001")!.credential.version,
+    );
+    assert.equal(await f.store.claim(), null);
+  } finally {
+    f.close();
+  }
+});
 test("expired leases recover with a new token and reject the old result", async () => {
   const f = fixture();
   try {

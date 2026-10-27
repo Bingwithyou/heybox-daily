@@ -138,9 +138,21 @@ function Dashboard() {
               : "已暂停，恢复后补跑今天未完成的任务"}
           </p>
         </div>
-        {data.nextRunAt && (
+        {today?.status === "running" ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-green-700">
+            <span
+              aria-hidden="true"
+              className="size-2 animate-pulse rounded-full bg-current motion-reduce:animate-none"
+            />
+            执行中
+          </p>
+        ) : today?.status === "queued" ? (
+          <p role="status" className="text-sm text-muted-foreground">
+            等待执行
+          </p>
+        ) : data.nextRunAt ? (
           <p className="text-sm text-muted-foreground">下次执行：{dateTime(data.nextRunAt)}</p>
-        )}
+        ) : null}
       </div>
       {expired && (
         <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-md bg-amber-50 px-4 py-3 text-sm">

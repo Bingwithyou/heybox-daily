@@ -11,7 +11,7 @@ const job: Job = { id: crypto.randomUUID(), date: '2026-10-27', lease: crypto.ra
 test('an empty queue checks only 48 times in a day and stops without waiting 30 minutes', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   let claims = 0;
-  const queue = new TaskQueue({ request: async () => { claims++; return idle(); }, execute: async () => assert.fail('no job') });
+  const queue = new TaskQueue({ concurrency: 8, request: async () => { claims++; return idle(); }, execute: async () => assert.fail('no job') });
   const running = queue.run();
   await setImmediate();
   for (let halfHour = 1; halfHour < 48; halfHour++) { t.mock.timers.tick(1_800_000); await setImmediate(); }
@@ -99,4 +99,89 @@ test('a failed child delivers its failure result and retries delivery without re
   t.mock.timers.tick(2000); await setImmediate();
   assert.equal(finishes, 2); assert.equal(executes, 1);
   queue.stop(); await running;
+});
+
+test('concurrency must be an integer from one to eight', () => {
+  for (const concurrency of [0, -1, 1.5, 9, NaN, Infinity]) {
+    assert.throws(() => new TaskQueue({ concurrency, request: async () => idle(), execute: async () => ({ status: 'completed' }) }), /TASK_CONCURRENCY/);
+  }
+});
+
+test('eight slots refill independently, notifications never overclaim, and stop drains claimed jobs', async () => {
+  const pending = Array.from({ length: 12 }, (_, index) => ({ ...job, id: crypto.randomUUID(),
+    credential: { ...job.credential, account: String(index + 1) } }));
+  const releases: Array<() => void> = [];
+  const executed: string[] = []; const finished: string[] = [];
+  let active = 0; let maximum = 0; let claims = 0; let stopped = false;
+  const queue = new TaskQueue({ concurrency: 8, request: async (path, body) => {
+    if (path === '/internal/finish') {
+      finished.push((body as { id: string }).id); return new Response(null, { status: 204 });
+    }
+    claims++; return pending.length ? Response.json(pending.shift()) : idle();
+  }, execute: async value => {
+    executed.push(value.id); active++; maximum = Math.max(maximum, active);
+    await new Promise<void>(resolve => releases.push(resolve));
+    active--; return { status: 'completed' };
+  } });
+  const running = queue.run().then(() => { stopped = true; });
+  try {
+    await setImmediate();
+    assert.equal(active, 8); assert.equal(claims, 8);
+    for (let n = 0; n < 20; n++) queue.wake();
+    await setImmediate(); assert.equal(claims, 8);
+    releases[3](); await setImmediate();
+    assert.equal(executed.length, 9); assert.equal(active, 8);
+    assert.equal(finished.length, 1, 'a slow first job must not block a later slot');
+    queue.stop(); await setImmediate();
+    assert.equal(stopped, false, 'stop waits for all active executions and result deliveries');
+    assert.equal(claims, 9); assert.equal(pending.length, 3);
+  } finally {
+    queue.stop(); releases.forEach(release => release()); await running;
+  }
+  assert.equal(maximum, 8); assert.equal(new Set(executed).size, 9);
+  assert.equal(finished.length, 9); assert.equal(active, 0);
+});
+
+test('parallel result-delivery retries have independent timers and keep their slots until delivered', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const jobs = Array.from({ length: 3 }, () => ({ ...job, id: crypto.randomUUID() }));
+  const finishes = new Map<string, number>();
+  let claimed = 0; let executed = 0;
+  const queue = new TaskQueue({ concurrency: 2, request: async (path, body) => {
+    if (path === '/internal/claim') return claimed < jobs.length ? Response.json(jobs[claimed++]) : idle();
+    const id = (body as { id: string }).id;
+    const attempts = (finishes.get(id) || 0) + 1;
+    finishes.set(id, attempts);
+    return new Response(null, { status: attempts === 1 ? 503 : 204 });
+  }, execute: async () => { executed++; return { status: 'completed' }; } });
+  const running = queue.run();
+  try {
+    await setImmediate();
+    assert.equal(executed, 2); assert.equal(claimed, 2);
+    queue.wake(); queue.wake(); await setImmediate();
+    assert.equal(finishes.get(jobs[0].id), 1, 'notifications must not bypass delivery backoff');
+    t.mock.timers.tick(2000); await setImmediate();
+    assert.equal(finishes.get(jobs[0].id), 2); assert.equal(finishes.get(jobs[1].id), 2);
+    assert.equal(executed, 3);
+    queue.stop();
+  } finally {
+    queue.stop(); t.mock.timers.tick(10_000); await running;
+  }
+  assert.equal(finishes.get(jobs[2].id), 2);
+});
+
+test('stop during a claim still executes and reports the accepted lease without claiming another', async () => {
+  let deliver!: (value: Response) => void; let complete!: () => void;
+  let claims = 0; let finishes = 0; let stopped = false;
+  const queue = new TaskQueue({ concurrency: 8, request: async path => {
+    if (path === '/internal/finish') { finishes++; return new Response(null, { status: 204 }); }
+    claims++; return new Promise<Response>(resolve => { deliver = resolve; });
+  }, execute: async () => {
+    await new Promise<void>(resolve => { complete = resolve; }); return { status: 'completed' };
+  } });
+  const running = queue.run().then(() => { stopped = true; });
+  queue.stop(); deliver(Response.json(job)); await setImmediate();
+  assert.equal(stopped, false); assert.equal(claims, 1);
+  complete(); await running;
+  assert.equal(finishes, 1); assert.equal(claims, 1);
 });

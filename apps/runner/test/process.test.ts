@@ -5,13 +5,46 @@ import { createRunnerServer } from '../src/server.ts';
 import { ChallengeStore } from '../src/challenges.ts';
 import { failureCategory } from '../src/worker.ts';
 import { HeyboxApiError } from 'heybox-daily/client';
+import { encryptCredential } from '../src/crypto.ts';
+import { beijingDate } from '@heybox/contracts';
 
 test('failure diagnostics identify the stage without exposing exception text or credentials', () => {
   assert.equal(failureCategory(new HeyboxApiError('/account/get_login_code/', 'show_captcha', 'private-fixture')), 'captcha_required');
   assert.equal(failureCategory(new Error('未能从官网获取设备令牌')), 'device_token');
   assert.equal(failureCategory(new Error('请求过于频繁，请稍后再试')), 'upstream_rate_limit');
   assert.equal(failureCategory(new Error('HTTP 403：/account/get_login_code/')), 'upstream_http');
+  assert.equal(failureCategory(new Error('HTTP 429：/task/list_v2/')), 'upstream_rate_limit');
   assert.equal(failureCategory(new Error('private-phone-and-secret')), 'internal');
+});
+
+test('daily failures log measured execution time and rate limits without account credentials', async t => {
+  const lines: string[] = [];
+  t.mock.method(console, 'info', (message: string) => lines.push(message));
+  const names = ['NODE_OPTIONS', 'CREDENTIAL_KEY', 'WEBSITE_URL', 'RUNNER_SERVICE_TOKEN'] as const;
+  const previous = names.map(name => process.env[name]);
+  const key = Buffer.alloc(32, 7).toString('base64');
+  const config = { session: { heybox_id: '9876543210', pkey: 'private-key', device_id: 'private-device', x_xhh_tokenid: 'private-token' },
+    device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
+  const job = { id: crypto.randomUUID(), lease: crypto.randomUUID(), date: beijingDate(), credential: encryptCredential(config, key) };
+  const stub = `globalThis.fetch = async input => new URL(input).pathname === '/internal/heartbeat'
+    ? new Response(null, {status:204}) : new Response(null, {status:429});`;
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --import=data:text/javascript,${encodeURIComponent(stub)}`;
+  process.env.CREDENTIAL_KEY = key; process.env.WEBSITE_URL = 'https://website.invalid';
+  process.env.RUNNER_SERVICE_TOKEN = 'service-token-fixture'.repeat(3);
+  try {
+    const result = await runChild<{ status: string; reason: string }>({ action: 'daily', job });
+    assert.equal(result.status, 'failed'); assert.equal(result.reason, 'upstream');
+  } finally {
+    names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index]; });
+  }
+  assert.equal(lines.length, 1);
+  const log = JSON.parse(lines[0]);
+  assert.equal(log.event, 'runner_task_finished'); assert.equal(log.jobId, job.id);
+  assert.equal(log.outcome, 'failed'); assert.equal(log.category, 'upstream_rate_limit');
+  assert.ok(log.durationMs > 0);
+  for (const secret of [...Object.values(config.session), job.credential.ciphertext, key, 'service-token-fixture']) {
+    assert.ok(!lines[0].includes(secret));
+  }
 });
 
 test('child execution has a hard timeout and does not echo credentials on failure', async () => {

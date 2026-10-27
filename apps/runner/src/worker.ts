@@ -14,7 +14,7 @@ export function failureCategory(error: unknown) {
   const text = error instanceof Error ? error.message : '';
   if (/原生签名|签名资源/.test(text)) return 'native_signer';
   if (/设备令牌|官网/.test(text)) return 'device_token';
-  if (/频繁|次数.*限制/.test(text)) return 'upstream_rate_limit';
+  if (/频繁|次数.*限制|^HTTP 429：/.test(text)) return 'upstream_rate_limit';
   if (/验证码/.test(text)) return 'verification_code';
   if (/^HTTP \d{3}：/.test(text)) return 'upstream_http';
   if (/请求失败或超时/.test(text)) return 'upstream_network';
@@ -33,7 +33,7 @@ async function checkpoint(job: Job) {
     body: JSON.stringify({ id: job.id, lease: job.lease, version: job.credential.version }), signal: AbortSignal.timeout(10_000), redirect: 'error' });
   if (!response.ok) throw new Error('cancelled');
 }
-async function daily(job: Job): Promise<Outcome> {
+async function daily(job: Job): Promise<Outcome & { category?: string }> {
   const config = decryptCredential(job.credential, process.env.CREDENTIAL_KEY || '');
   const client = new HeyboxClient(config);
   let before: InspectionSnapshot | undefined;
@@ -57,7 +57,7 @@ async function daily(job: Job): Promise<Outcome> {
       expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
       latest = state; snapshot = publicSnapshot(state);
     } catch { /* keep partial result optional */ }
-    return { status: 'failed', reason: 'upstream', snapshot,
+    return { status: 'failed', reason: 'upstream', category: failureCategory(error), snapshot,
       expDelta, coinDelta: before && latest ? latest.coin - before.coin : undefined };
   }
 }
