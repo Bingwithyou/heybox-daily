@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, Link, redirect } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Clock3, CircleAlert, LoaderCircle } from "lucide-react";
 import { taskIds, taskNames, publicReasons } from "@heybox/contracts";
@@ -6,18 +6,11 @@ import { Button } from "../components/ui/button";
 import { Switch } from "../components/ui/switch";
 import { useAccount } from "../components/layout";
 import { client } from "../lib/client";
-import { readAccounts } from "../lib/accounts";
 import { privatePageHead } from "../lib/seo";
 import { createDashboardLoader, type DashboardData } from "../lib/dashboard-loader";
 import { dateTime, readableError, rewardDelta } from "../lib/utils";
 
 export const Route = createFileRoute("/tasks")({
-  beforeLoad: async () => {
-    // Direct requests are guarded by the Worker; check again for client navigation.
-    if (typeof window === "undefined") return;
-    const accounts = await readAccounts().catch(() => null);
-    if (!accounts?.activeAccount) throw redirect({ to: "/login", replace: true });
-  },
   head: () => privatePageHead("我的任务 · Heybox Daily"),
   component: Dashboard,
 });
