@@ -37,16 +37,11 @@ function About() {
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-6">
           <Link
-            to="/login"
+            to={account ? "/tasks" : "/login"}
             className="inline-flex h-11 items-center justify-center rounded-lg bg-primary px-5 text-base font-medium text-primary-foreground hover:bg-primary/80"
           >
-            登录并开启任务
+            {account ? "我的任务" : "登录并开启任务"}
           </Link>
-          {account && (
-            <Link to="/tasks" className="text-base underline underline-offset-4">
-              我的任务
-            </Link>
-          )}
         </div>
         <section className="mt-14 border-t pt-8 text-base leading-7">
           <h2 className="text-xl font-semibold">在线使用</h2>
