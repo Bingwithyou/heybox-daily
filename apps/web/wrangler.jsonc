@@ -6,6 +6,8 @@
   "compatibility_date": "2026-10-26",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "kv_namespaces": [{ "binding": "SITE_CONFIG", "id": "05d04cf561004bd9b5b6084deb9dedf4" }],
+  "r2_buckets": [{ "binding": "SPONSOR_ASSETS", "bucket_name": "heybox-daily-assets" }],
   "observability": {
     "logs": {
       "enabled": true,
@@ -46,6 +48,8 @@
       ],
       "triggers": { "crons": [] },
       "services": [],
+      "kv_namespaces": [],
+      "r2_buckets": [],
       "vars": {
         "DEPLOYMENT_ENV": "staging",
         "SITE_URL": "https://preview.heybox.cansiny.top",

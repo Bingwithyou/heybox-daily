@@ -28,6 +28,32 @@ pnpm --filter @heybox/web test:integration
 
 只查看界面可以运行 `pnpm --filter @heybox/web dev`，打开 `http://localhost:3000/`、`/about`、`/help`、`/privacy`、`/login` 或 `/sponsor`。默认入口 `/` 在未登录时进入 `/login`，已登录时进入 `/tasks`；访客直接访问 `/tasks` 也会进入登录页。公开介绍位于 `/about`。需要调试真实 API 时，复制 `apps/web/.dev.vars.example` 为 `.dev.vars`，填入本地密钥，运行 `pnpm --filter @heybox/web db:local`，并配置可用的执行端。未配置时 API 会明确返回服务未就绪。
 
+### 赞助名单与头像
+
+赞助页通过公开只读 `/api/sponsors` 读取 Workers KV，不依赖登录或 Runner 密钥。名单存放在 `heybox-daily-config` namespace（binding `SITE_CONFIG`）的 `sponsors` key，不设置到期时间。Cloudflare 控制台的 **存储和数据库 → Workers KV → heybox-daily-config** 可直接编辑值：
+
+```json
+[
+  { "id": "h-y", "name": "H*y", "avatar": "/sponsors/h-y.jpg" }
+]
+```
+
+`id` 保持唯一，`name` 是显示昵称，数组顺序即页面顺序。`avatar` 是站内路径，文件名只使用英文字母、数字、下划线或短横线，扩展名支持 `jpg`、`jpeg`、`png`、`webp`、`avif`。空数组隐藏感谢名单；缺少配置或配置格式错误也会隐藏，服务端记录读取/校验错误，不影响收款码。KV 的跨地域更新可能需要 60 秒或更久，修改后重新访问页面查看。
+
+头像存放在 R2 Standard bucket `heybox-daily-assets`（binding `SPONSOR_ASSETS`）下的 `sponsors/` 目录，例如 `sponsors/h-y.jpg`。bucket 保持私有，不启用 `r2.dev` 或公开 bucket 域名；现有 Worker 只为 `/sponsors/<图片文件名>` 提供 GET/HEAD 读取，边缘及浏览器缓存 1 小时。替换头像建议使用新文件名，再更新 KV，避免旧缓存。无需 Cloudflare Images。
+
+添加赞助人时，先在 **R2 → heybox-daily-assets → sponsors/** 上传已裁切的头像，再在 KV 数组中添加记录。只上传公开展示用的头像，不上传付款截图。后续名单和头像更新无需重新部署；首次接入仍需要部署代码和 bindings，本次资源初始化不等同于部署。
+
+仓库的 `apps/web/seed/` 保存初始数据和裁切头像，页面不直接引用这些文件。以下命令从仓库根目录执行，仅初始化本地存储，用于预览：
+
+```sh
+pnpm --filter @heybox/web exec wrangler kv key put sponsors --binding SITE_CONFIG --path seed/sponsors.json --local
+pnpm --filter @heybox/web exec wrangler r2 object put heybox-daily-assets/sponsors/h-y.jpg --file seed/sponsors/h-y.jpg --content-type image/jpeg --local
+pnpm --filter @heybox/web dev
+```
+
+向远端上传需把 `--local` 改为 `--remote`，写名单会替换完整数组，必须先读取当前配置并保留其他记录。`staging` 环境默认未绑定生产 KV/R2，不展示名单；需要预发布数据时应单独创建并配置资源，不能复用生产 binding。回滚可撤回本次代码和 bindings，保留 KV/R2 数据即可。
+
 公开页的标题、canonical、分享元数据和介绍页结构化数据由 `apps/web/src/lib/seo.ts` 管理，Worker 提供 `/robots.txt` 和 `/sitemap.xml`。自部署网站到其他域名时，除了修改 `SITE_URL` 和路由，也需更新该文件的 `siteUrl`，避免搜索结果指向原站。sitemap 仅列出公开页面；登录、个人任务和接口不收录，访问控制仍由原有认证实现。发布后需核对实际域名的 robots 和 HTML，确认 CDN 的托管 robots 或爬虫规则没有覆盖应用配置。
 
 格式化只处理网站：`pnpm --filter @heybox/web exec vp fmt`。不需要改动原有 CLI 或 Python 辅助脚本。

@@ -4,6 +4,7 @@ import { api } from "./server/api.ts";
 import { runScheduled } from "./server/schedule.ts";
 import { crawlerDocument, shouldNoindex } from "./server/seo.ts";
 import { pageAccess } from "./server/page-access.ts";
+import { sponsorContent } from "./server/sponsors.ts";
 import { LoginTiming, loginTimingHeader } from "@heybox/contracts";
 
 export default {
@@ -17,6 +18,7 @@ export default {
     try {
       response =
         crawlerDocument(request, env.DEPLOYMENT_ENV === "staging") ||
+        (await sponsorContent(request, env, context)) ||
         (await pageAccess(request, env, context)) ||
         (await api(request, env, context, timing)) ||
         (await start.fetch(request));
@@ -33,8 +35,12 @@ export default {
     result.headers.set("referrer-policy", "same-origin");
     result.headers.set("x-frame-options", "DENY");
     result.headers.set("permissions-policy", "camera=(), microphone=(), geolocation=()");
-    if (new URL(request.url).pathname !== "/api/stats" || request.method !== "GET" || !response.ok)
-      result.headers.set("cache-control", "no-store");
+    const path = new URL(request.url).pathname;
+    const cacheable =
+      response.ok &&
+      ((path === "/api/stats" && request.method === "GET") ||
+        (path.startsWith("/sponsors/") && ["GET", "HEAD"].includes(request.method)));
+    if (!cacheable) result.headers.set("cache-control", "no-store");
     const durationMs = Math.round((performance.now() - started) * 10) / 10;
     result.headers.set(
       "server-timing",
