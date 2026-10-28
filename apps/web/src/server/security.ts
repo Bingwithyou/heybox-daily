@@ -68,6 +68,7 @@ export async function runnerRequest(
   input: unknown,
   backend?: "legacy" | "cloudflare",
   timing?: LoginTiming,
+  signal?: AbortSignal,
 ) {
   const started = performance.now();
   try {
@@ -86,7 +87,9 @@ export async function runnerRequest(
         ...(timing ? { [loginTimingHeader]: timing.id } : {}),
       },
       body: JSON.stringify(input),
-      signal: AbortSignal.timeout(120_000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+        : AbortSignal.timeout(120_000),
       redirect: "manual",
     });
     timing?.merge(response.headers.get("server-timing"));

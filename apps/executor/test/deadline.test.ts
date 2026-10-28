@@ -21,3 +21,21 @@ test('execution deadline interrupts sleeps and rejects later upstream actions', 
     assert.equal(calls, 0);
   } finally { scope.close(); }
 });
+
+test('request cancellation interrupts in-flight fetch, confirmation sleep and later actions', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const scope = deadline(100, async (_url, init) => {
+    calls++;
+    return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true }));
+  }, controller.signal);
+  try {
+    const request = scope.fetch('https://upstream.invalid');
+    const sleep = scope.sleep(1000);
+    controller.abort(new Error('client_cancelled'));
+    await assert.rejects(request, /client_cancelled/);
+    await assert.rejects(sleep, /client_cancelled/);
+    await assert.rejects(scope.fetch('https://upstream.invalid'), /client_cancelled/);
+    assert.equal(calls, 1);
+  } finally { scope.close(); }
+});

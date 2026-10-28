@@ -10,6 +10,7 @@ import type { Store } from '../../web/src/server/store.ts';
 import { deadline } from './deadline.ts';
 import type { LoginOperations } from './challenge.ts';
 import type { Env } from './env.ts';
+import { ActivityTrace } from './activity-trace.ts';
 
 export function failureCategory(error: unknown) {
   if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';
@@ -65,23 +66,38 @@ export async function executeDaily(job: Job, key: string, store: Pick<Store, 'he
     }
   } finally { scope.close(); }
 }
-export async function executeActivity(input: ActivityRequest, key: string, store: Pick<Store, 'activityAccess'>, fetchImpl: typeof fetch = fetch): Promise<ActivityResult> {
-  const scope = deadline(90_000, fetchImpl);
+export async function executeActivity(input: ActivityRequest, key: string, store: Pick<Store, 'activityAccess'>, fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal, trace = new ActivityTrace(input)): Promise<ActivityResult> {
+  const scope = deadline(90_000, fetchImpl, signal);
   try {
+    trace.enter('credential');
     const config = decryptCredential(input.credential, key);
-    const client = new HeyboxClient(config, { fetchImpl: scope.fetch });
+    const upstream = new HeyboxClient(config, { fetchImpl: scope.fetch });
+    const client = {
+      web: ((endpoint, ...args) => trace.upstream(endpoint, () => upstream.web(endpoint, ...args))) as typeof upstream.web,
+      report: ((...args) => trace.upstream('/account/data_report/', () => upstream.report(...args))) as typeof upstream.report,
+    };
     const check = async () => {
       scope.signal.throwIfAborted();
       if (!await store.activityAccess(input.credential.account, input.credential.version)) throw new ActivityError('activity_auth');
     };
     await check();
-    if (input.mode === 'list') return { mode: 'list', activities: await listActivities(client, config.session.heybox_id) };
-    return { mode: 'participate', activity: await participateActivity(client, config.session.heybox_id,
-      input.activityId, input.approvedFollowIds, { checkpoint: check, sleep: scope.sleep }) };
+    const onStage = (stage: string) => trace.enter(stage);
+    const result: ActivityResult = input.mode === 'list'
+      ? { mode: 'list', activities: await listActivities(client, config.session.heybox_id, { onStage }) }
+      : { mode: 'participate', activity: await participateActivity(client, config.session.heybox_id,
+        input.activityId, input.approvedFollowIds, { checkpoint: check, sleep: scope.sleep, onStage }) };
+    trace.enter('complete');
+    trace.log('executor_activity_completed', { stages: trace.stages });
+    return result;
   } catch (error) {
     const text = error instanceof Error ? error.message : '';
-    throw new ActivityFailure(error instanceof ActivityError ? error.code
+    const failure = new ActivityFailure(error instanceof ActivityError ? error.code
       : /登录已过期|登录已失效|设备令牌无效/.test(text) ? 'activity_auth' : 'activity_upstream');
+    trace.enter(trace.stage);
+    trace.log('executor_activity_failed', { code: failure.code, category: signal?.aborted ? 'cancelled'
+      : scope.signal.aborted ? 'timeout' : error instanceof ActivityError ? 'business' : failureCategory(error), stages: trace.stages });
+    throw failure;
   } finally { scope.close(); }
 }
 export async function requestDeviceToken(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERVICE_TOKEN'>,

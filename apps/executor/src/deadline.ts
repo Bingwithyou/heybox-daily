@@ -1,7 +1,7 @@
-export function deadline(ms: number, fetchImpl: typeof fetch = fetch) {
+export function deadline(ms: number, fetchImpl: typeof fetch = fetch, parent?: AbortSignal) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('execution_timeout')), ms);
-  const signal = controller.signal;
+  const signal = parent ? AbortSignal.any([controller.signal, parent]) : controller.signal;
   const request: typeof fetch = async (input, init) => {
     signal.throwIfAborted();
     const original = init?.signal || (input instanceof Request ? input.signal : undefined);

@@ -9,6 +9,8 @@ import { executeActivity } from './operations.ts';
 import { deadline } from './deadline.ts';
 import type { Env } from './env.ts';
 import { beginPreparedLogin } from './login-preparation.ts';
+import { withActivityLease } from './activity-lifecycle.ts';
+import { ActivityTrace } from './activity-trace.ts';
 export { LoginChallenge, ActivityGate } from './objects.ts';
 
 export default {
@@ -45,16 +47,11 @@ export default {
       }
       if (path === '/activities') {
         const data = activityRequestSchema.parse(input);
+        const trace = new ActivityTrace(data);
         const gate = env.ACTIVITY_GATE.get(env.ACTIVITY_GATE.idFromName('global'));
-        const acquired = await gate.fetch('https://gate/acquire', { method: 'POST', body: JSON.stringify({ account: data.credential.account }) });
-        if (!acquired.ok) throw new ActivityFailure('activity_busy');
-        const { token } = await acquired.json() as { token: string | null };
-        if (!token) throw new ActivityFailure('activity_busy');
-        try { return Response.json(await executeActivity(data, env.CREDENTIAL_KEY, new Store(env.DB))); }
-        finally {
-          context.waitUntil(gate.fetch('https://gate/release', { method: 'POST', body: JSON.stringify({ account: data.credential.account, token }) })
-            .catch(() => { console.warn(JSON.stringify({ event: 'executor_activity_release_failed' })); }));
-        }
+        const result = await withActivityLease(gate, data.credential.account, request.signal, context, trace,
+          () => executeActivity(data, env.CREDENTIAL_KEY, new Store(env.DB), fetch, request.signal, trace));
+        return Response.json(result);
       }
       if (path === '/diagnostics/inspect') {
         // Authenticated operator check; only reads the current account's upstream task state.

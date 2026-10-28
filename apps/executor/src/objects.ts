@@ -85,7 +85,8 @@ export class ActivityGate extends DurableObject<Env> {
         return new Response(null, { status: 204 });
       }
       if (action !== '/acquire') return new Response(null, { status: 404 });
-      if (leases.length >= 4 || leases.some(value => value.account === input.account)) return Response.json({ token: null });
+      if (leases.some(value => value.account === input.account)) return Response.json({ token: null, reason: 'account' });
+      if (leases.length >= 4) return Response.json({ token: null, reason: 'capacity' });
       const token = crypto.randomUUID();
       leases.push({ account: input.account, token, expiresAt: Date.now() + 95_000 });
       await this.save(leases);

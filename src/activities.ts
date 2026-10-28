@@ -95,10 +95,12 @@ function viewOf(home: ActivityHome): ActivityView {
 export async function inspectActivity(client: ActivityClient, account: string, id: string): Promise<ActivityView> {
   return viewOf(await loadHome(client, account, id));
 }
-export async function listActivities(client: ActivityClient, account: string): Promise<ActivityView[]> {
+export async function listActivities(client: ActivityClient, account: string,
+  { onStage = () => {} }: Pick<ActivityOptions, 'onStage'> = {}): Promise<ActivityView[]> {
   const ids = new Set<string>();
   // The service returns at most 15 rows even if a larger limit is requested.
   for (let page = 0; page < 10; page++) {
+    onStage('list_rooms');
     const rows = await client.web<Array<{ award_id?: number | string; status?: number }>>('/store/roll_room_v2/room_list', { offset: String(page * 15), limit: '15' });
     if (!Array.isArray(rows)) throw new ActivityError('activity_invalid');
     for (const row of rows) {
@@ -109,18 +111,24 @@ export async function listActivities(client: ActivityClient, account: string): P
     if (ids.size > 30) throw new ActivityError('activity_invalid');
   }
   const result: ActivityView[] = [];
-  for (const id of ids) result.push(await inspectActivity(client, account, id));
+  for (const id of ids) {
+    onStage('list_home');
+    result.push(await inspectActivity(client, account, id));
+  }
   return result;
 }
 interface ActivityOptions {
   sleep?: (ms: number) => Promise<unknown>; now?: () => number; checkpoint?: () => Promise<void>;
+  onStage?: (stage: string) => void;
 }
 export async function participateActivity(client: ActivityClient, account: string, id: string,
-  approvedFollowIds: string[], { sleep = setTimeout, now = Date.now, checkpoint = async () => {} }: ActivityOptions = {}): Promise<ActivityView> {
+  approvedFollowIds: string[], { sleep = setTimeout, now = Date.now, checkpoint = async () => {}, onStage = () => {} }: ActivityOptions = {}): Promise<ActivityView> {
+  onStage('load_home');
   await checkpoint();
   let home = await loadHome(client, account, id);
   const allowed = new Set(approvedFollowIds);
   function checkEligibility() {
+    onStage('eligibility');
     const view = viewOf(home);
     if (view.status === 'blocked' || view.status === 'ended') throw new ActivityError('activity_blocked');
     if (view.followAccounts.some(target => !allowed.has(target.id))) throw new ActivityError('activity_changed');
@@ -139,36 +147,44 @@ export async function participateActivity(client: ActivityClient, account: strin
     checkEligibility();
     if (home.joined || tasks(home).some(latest => String(latest.task_id) === String(task.task_id) && latest.finished === true)) continue;
     const target = followTarget(task)!;
+    onStage('follow_profile');
     const profile = await client.web<{ account_detail?: { userid?: number | string; bbs_info?: { follow_status?: number } } }>(
       '/bbs/app/profile/user/profile', { userid: target });
     const followStatus = profile?.account_detail?.bbs_info?.follow_status;
     if (String(profile?.account_detail?.userid) !== target || ![0, 1, 2, 3].includes(followStatus!)) throw new ActivityError('activity_invalid');
     await checkpoint();
+    onStage('follow_report');
     await client.web('/store/roll_room_v2/data_report', {}, { body: new URLSearchParams({ report_type: '1', task_type: task.task_key!, task_id: String(task.task_id) }) });
     if (followStatus === 0 || followStatus === 2) {
       await checkpoint();
+      onStage('follow_submit');
       try {
         await client.web('/bbs/app/profile/follow/user', {}, { body: new URLSearchParams({ following_id: target }) });
       } catch { /* The response may have been lost after acceptance. Read back before doing anything else. */ }
     }
+    onStage('follow_confirm');
     await confirm(value => value.joined === true || tasks(value).some(latest => String(latest.task_id) === String(task.task_id) && latest.finished === true));
   }
   if (!home.joined) {
     checkEligibility();
     if (frontTasks(home).some(task => task.finished !== true)) throw new ActivityError('activity_unconfirmed');
     await checkpoint();
+    onStage('join_submit');
     try {
       await client.web('/store/roll_room_v2/join', { osType: 'web' }, { body: new URLSearchParams({ award_id: id }) });
     } catch { /* Never repeat a possibly accepted join request. */ }
+    onStage('join_confirm');
     await confirm(value => value.joined === true);
   }
   const share = shareTask(home);
   if (share && share.finished !== true) {
     checkEligibility();
+    onStage('share_validate');
     const protocol = decodeProtocol(share.jump_protocol);
     if (protocol?.act_id !== `_rollroomv2_${id}`) throw new ActivityError('activity_invalid');
     const sessionId = randomUUID();
     for (const action of ['show', 'tap', 'success'] as const) {
+      onStage('share_' + action);
       await checkpoint();
       try {
         await client.report({ type: action === 'tap' ? '4' : '3', path: `/share/behavior/${action}`, time: String(Math.floor(now() / 1000)),
@@ -177,6 +193,7 @@ export async function participateActivity(client: ActivityClient, account: strin
       } catch { break; }
       if (action === 'tap') await sleep(2000);
     }
+    onStage('share_confirm');
     await confirm(value => shareTask(value)?.finished === true);
   }
   return viewOf(home);

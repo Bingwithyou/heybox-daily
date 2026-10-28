@@ -23,20 +23,32 @@ function checkAccount(userId: string, expectedAccount: string) {
 }
 export const router = {
   activities: authenticated.input(accountInput).handler(async ({ context, input }) => {
-    const result = await activityRequest(context.env, context.store, context.userId, {
-      mode: "list",
-      ...input,
-    });
+    const result = await activityRequest(
+      context.env,
+      context.store,
+      context.userId,
+      {
+        mode: "list",
+        ...input,
+      },
+      context.request.signal,
+    );
     if (result.mode !== "list") throw new ORPCError("BAD_GATEWAY");
     return result.activities;
   }),
   participateActivity: authenticated
     .input(accountInput.extend(activityConsentSchema.shape))
     .handler(async ({ context, input }) => {
-      const result = await activityRequest(context.env, context.store, context.userId, {
-        mode: "participate",
-        ...input,
-      });
+      const result = await activityRequest(
+        context.env,
+        context.store,
+        context.userId,
+        {
+          mode: "participate",
+          ...input,
+        },
+        context.request.signal,
+      );
       if (result.mode !== "participate") throw new ORPCError("BAD_GATEWAY");
       return result.activity;
     }),

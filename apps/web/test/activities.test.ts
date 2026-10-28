@@ -24,6 +24,39 @@ const view = {
   status: "completed",
   followAccounts: [],
 };
+
+test("activity cancellation reaches the executor service binding", async () => {
+  const controller = new AbortController();
+  let entered!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let forwarded: AbortSignal | null | undefined;
+  const cloudflare = {
+    ...env,
+    EXECUTOR_ENABLED: "true",
+    EXECUTOR: {
+      fetch: async (_url: unknown, init?: RequestInit) => {
+        forwarded = init?.signal;
+        entered();
+        return new Promise<Response>((_resolve, reject) =>
+          forwarded!.addEventListener("abort", () => reject(forwarded!.reason), { once: true }),
+        );
+      },
+    },
+  } as unknown as Env;
+  const result = activityRequest(
+    cloudflare,
+    store,
+    "heybox:123",
+    { mode: "list", expectedAccount: "123" },
+    controller.signal,
+  );
+  await ready;
+  controller.abort();
+  await assert.rejects(result);
+  assert.ok(forwarded?.aborted);
+});
 test("activity calls check the active account before reading credentials or contacting the runner", async (t) => {
   t.mock.method(globalThis, "fetch", async () => assert.fail("unexpected request"));
   await assert.rejects(

@@ -18,6 +18,7 @@ export async function activityRequest(
   store: Pick<Store, "activityCredential">,
   userId: string,
   input: Input,
+  signal?: AbortSignal,
 ): Promise<ActivityResult> {
   if (userId !== `heybox:${input.expectedAccount}`)
     throw new ORPCError("CONFLICT", { message: "当前账号已变化，请刷新页面后重试" });
@@ -34,7 +35,9 @@ export async function activityRequest(
           approvedFollowIds: input.approvedFollowIds,
         };
   try {
-    const result = activityResultSchema.parse(await runnerRequest(env, "/activities", request));
+    const result = activityResultSchema.parse(
+      await runnerRequest(env, "/activities", request, undefined, undefined, signal),
+    );
     if (
       result.mode !== input.mode ||
       (result.mode === "participate" &&

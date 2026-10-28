@@ -54,6 +54,8 @@ const compiled = await build({ stdin: { contents: source, resolveDir: fileURLToP
 let upstreamRequests = 0;
 let verificationCount = 0;
 let holdVerification = false;
+let holdActivity = false;
+let activityStarted = false;
 const releases = [];
 let reports = 0;
 let signed = false;
@@ -61,7 +63,7 @@ const completed = new Set();
 const taskState = () => ({ user: { userid: '123', level_info: { exp: 100 + completed.size, coin: 200, level: 1, max_exp: 1000 } },
   task_list: [{ title: '每日任务', tasks: ['1', '19', '31'].map(id => ({ title: id, state: completed.has(id) ? 'finish' : 'waiting', report_extra: { task_id: id } })) }] });
 const options = convertV4MiniflareOptions({ name: 'executor-test', modules: true, script: compiled.outputFiles[0].text,
-  compatibilityDate: '2026-10-27', compatibilityFlags: ['nodejs_compat'], cf: false,
+  compatibilityDate: '2026-10-27', compatibilityFlags: ['nodejs_compat', 'enable_request_signal', 'request_signal_passthrough'], cf: false,
   bindings: { CREDENTIAL_KEY: key, RUNNER_SERVICE_TOKEN: token, TOKEN_SERVICE_URL: 'https://token.invalid', TOKEN_SERVICE_TOKEN: token, DAILY_ENABLED: 'true' },
   d1Databases: ['DB'],
   durableObjects: { LOGIN_CHALLENGES: { className: 'LoginChallenge', useSQLite: true }, ACTIVITY_GATE: { className: 'ActivityGate', useSQLite: true } },
@@ -99,11 +101,25 @@ const options = convertV4MiniflareOptions({ name: 'executor-test', modules: true
     else if (path === '/bbs/app/link/game/comments') result = { links: [{ linkid: 11, userid: 12 }] };
     else if (path === '/game/comment/share_data/') result = { comment_detail: { linkid: 11 } };
     else if (path === '/account/data_report/') { completed.add(['1', '19', '31'][Math.floor(reports++ / 3)]); result = {}; }
-    else if (path.endsWith('/room_list')) result = [{ award_id: 1, status: 0 }];
+    else if (path.endsWith('/room_list')) {
+      if (holdActivity) { activityStarted = true; await new Promise(resolve => releases.push(resolve)); }
+      result = [{ award_id: 1, status: 0 }];
+    }
     else if (path.endsWith('/get_home_info')) result = { logined: true, heybox_id: '123', joined: false, baned: false, task_list: [], award_info: { award_id: 1, award_name: 'Fixture', status: 0 } };
     else throw new Error('Unexpected upstream path ' + path);
     return Response.json({ status: 'ok', result });
   } });
+options.workers.push(...convertV4MiniflareOptions({ name: 'activity-caller', modules: true,
+  compatibilityDate: '2026-10-27', compatibilityFlags: ['enable_request_signal', 'request_signal_passthrough'],
+  serviceBindings: { EXECUTOR: 'executor-test' },
+  script: `export default { async fetch(request, env) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 200);
+    try { return await env.EXECUTOR.fetch('https://executor/activities', { method: 'POST',
+      headers: request.headers, body: await request.text(), signal: controller.signal }); }
+    catch { return Response.json({ cancelled: true }); }
+    finally { clearTimeout(timer); }
+  } }` }).workers);
 options.resourcePersistencePath = directory;
 let runtime = new Miniflare(options);
 const call = (path, body = {}, requestId = randomUUID()) => runtime.dispatchFetch(`https://executor.local${path}`, { method: 'POST',
@@ -201,6 +217,22 @@ try {
   await gateCall('release', { account: '2', token: leases[1].token });
   const activities = await call('/activities', { mode: 'list', credential });
   assert.equal((await activities.json()).activities.length, 1);
+  holdActivity = true;
+  // Match production's web -> executor service-binding cancellation, without relying on the dev HTTP proxy.
+  const caller = await runtime.getWorker('activity-caller');
+  const cancelled = caller.fetch('https://caller/activities', { method: 'POST',
+    headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ mode: 'list', credential }) });
+  await until(() => activityStarted, 'activity did not start');
+  assert.equal((await (await gateCall('acquire', { account: '123' })).json()).reason, 'account');
+  assert.equal((await (await cancelled).json()).cancelled, true);
+  let recoveredToken;
+  await until(async () => {
+    recoveredToken = (await (await gateCall('acquire', { account: '123' })).json()).token;
+    return !!recoveredToken;
+  }, 'cancelled request left its activity lease held', 2000);
+  await gateCall('release', { account: '123', token: recoveredToken });
+  holdActivity = false; releases.splice(0).forEach(release => release());
+  assert.equal((await call('/activities', { mode: 'list', credential })).status, 200);
   assert.equal((await call('/tasks/wake')).status, 204);
   await until(async () => (await db.prepare('SELECT status FROM jobs').first())?.status === 'running', 'queue job was not claimed');
   const delivery = await db.prepare('SELECT id,queue_token AS token FROM jobs').first();
