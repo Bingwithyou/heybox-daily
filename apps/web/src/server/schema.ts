@@ -98,6 +98,7 @@ export const jobs = sqliteTable(
       t.dispatchUntil,
     ),
     index("jobs_queue_token").on(t.queueToken),
+    index("jobs_lease").on(t.lease),
   ],
 );
 export const rateLimits = sqliteTable("rate_limits", {
@@ -105,3 +106,23 @@ export const rateLimits = sqliteTable("rate_limits", {
   count: integer("count").notNull(),
   expiresAt: integer("expires_at").notNull(),
 });
+
+export const jobAttempts = sqliteTable(
+  "job_attempts",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id")
+      .notNull()
+      .references(() => jobs.id, { onDelete: "cascade" }),
+    number: integer("number").notNull(),
+    startedAt: integer("started_at").notNull(),
+    finishedAt: integer("finished_at"),
+    retryAt: integer("retry_at"),
+    status: text("status").notNull(),
+    result: text("result"),
+  },
+  (t) => [
+    index("job_attempts_job").on(t.jobId, t.startedAt),
+    index("job_attempts_state").on(t.status, t.finishedAt),
+  ],
+);

@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { Store, type Database, type Statement } from "../src/store.ts";
-export function fixture(initialTime = Date.parse("2026-10-27T00:01:00+08:00")) {
+export function fixture(initialTime = Date.parse("2026-10-27T00:30:00+08:00")) {
   const db = new DatabaseSync(":memory:");
   const queries: Array<{ sql: string; values: unknown[] }> = [];
   const migrations = new URL("../../../apps/web/migrations/", import.meta.url);

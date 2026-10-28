@@ -9,6 +9,30 @@ import { createHash } from 'node:crypto';
 const config = { session: { heybox_id: '12345', pkey: 'secret', x_xhh_tokenid: 'device-token', device_id: 'device' },
   device: { model: 'test', osVersion: '17' }, app: { version: '1.3.398', build: '1142', shaderVersion: '14' } };
 
+test('native request preserves deployed headers and cancels rejected response bodies', async () => {
+  let cancelled = false;
+  const client = new HeyboxClient(config, { fetchImpl: async (_url, init) => {
+    const headers = new Headers(init?.headers);
+    assert.match(headers.get('User-Agent')!, /ApiMaxJia\/1.0$/);
+    assert.equal(headers.get('Referer'), 'http://api.maxjia.com/');
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 });
+  } });
+  await assert.rejects(client.signState(), /HTTP 503/);
+  assert.equal(cancelled, true);
+});
+
+test('completed requests release their request timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  const client = new HeyboxClient(config, { fetchImpl: async (_url, init) => {
+    signal = init?.signal ?? undefined;
+    return Response.json({ status: 'ok', result: {} });
+  } });
+  await client.tasks();
+  t.mock.timers.tick(20_001);
+  assert.equal(signal?.aborted, false);
+});
+
 test('Web signature matches protocol vectors and normalizes repeated slashes', () => {
   assert.equal(webSignature('/task/list_v2/', 1793012400, '0123456789ABCDEF0123456789ABCDEF').hkey, '1I7SX12');
   assert.equal(webSignature('///game/comment/share_data', 1793012420, 'ABCDEF0123456789ABCDEF0123456789').hkey, 'UZ0ZZ44');

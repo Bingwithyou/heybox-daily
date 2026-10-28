@@ -6,6 +6,7 @@ export const phoneSchema = z.string().trim().transform(value => /^1[3-9]\d{9}$/.
 export const codeSchema = z.string().regex(/^\d{4,8}$/, '验证码应为 4 至 8 位数字');
 export const idSchema = z.string().uuid();
 export const bindingSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const DAILY_ATTEMPT_LIMIT = 5;
 export const taskIds = ['sign', '1', '19', '31'] as const;
 export const taskNames = { sign: '每日签到', '1': '分享帖子', '19': '分享游戏', '31': '分享游戏评价' };
 export const taskViewSchema = z.object({ id: z.enum(taskIds), state: z.enum(['waiting', 'finish']) });
@@ -58,8 +59,19 @@ export const jobSchema = z.object({ id: idSchema, date: z.string().regex(/^\d{4}
 export type Job = z.infer<typeof jobSchema>;
 export const queueMessageSchema = z.object({ id: idSchema, token: idSchema });
 export type QueueMessage = z.infer<typeof queueMessageSchema>;
+export const dailyFailureSchema = z.object({
+  category: z.enum(['network', 'timeout', 'http', 'rate_limit', 'captcha', 'auth', 'protocol', 'rejected', 'unconfirmed', 'internal']),
+  stage: z.string().regex(/^[a-z0-9_:-]{1,48}$/),
+  endpoint: z.string().regex(/^\/[a-zA-Z0-9_/-]{1,120}$/).optional(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  businessCode: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/).optional(),
+  durationMs: z.number().int().nonnegative(),
+  retryAfterMs: z.number().int().nonnegative().max(604800000).optional(),
+});
+export type DailyFailure = z.infer<typeof dailyFailureSchema>;
 export const outcomeSchema = z.object({ status: z.enum(['completed', 'failed', 'auth_expired', 'cancelled']),
   uncertain: z.boolean().optional(),
+  failure: dailyFailureSchema.optional(), errors: z.array(dailyFailureSchema).max(12).optional(),
   snapshot: snapshotSchema.optional(), expDelta: z.number().optional(), coinDelta: z.number().optional(),
   batteryDelta: z.number().int().optional(), execution: taskExecutionSchema.optional(),
   profile: profileSchema.optional(),
@@ -100,7 +112,7 @@ export class LoginFailure extends Error {
 
 export function beijingDate(now = Date.now()) { return new Date(now + 8 * 3600_000).toISOString().slice(0, 10); }
 export function nextRunAt(now = Date.now()) {
-  const today = Date.parse(`${beijingDate(now)}T00:01:00+08:00`);
+  const today = Date.parse(`${beijingDate(now)}T00:30:00+08:00`);
   return today > now ? today : today + 86400_000;
 }
 export const publicReasons = { upstream: '小黑盒接口暂时不可用', timeout: '本次执行超时',

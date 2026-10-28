@@ -26,7 +26,7 @@ export async function verifySeo(base: string) {
   const origin = "https://heybox.cansiny.top";
   const pages = [
     ["/about", "小黑盒自动签到", "分享游戏评价"],
-    ["/help", "使用说明", "00:01"],
+    ["/help", "使用说明", "00:30"],
     ["/privacy", "隐私说明", "30"],
     ["/sponsor", "赞助", "支持"],
   ];

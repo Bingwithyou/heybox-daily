@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { fixture } from "../../../packages/hosting/test/database.ts";
 import { beijingDate, nextRunAt, taskIds, type Credential } from "@heybox/contracts";
 
+const confirmed = {
+  snapshot: { exp: 0, coin: 0, tasks: taskIds.map((id) => ({ id, state: "finish" as const })) },
+};
+
 test("paused delivery stays queued without attempts and stale delivery cannot undo a new reservation", async () => {
   const f = fixture();
   try {
@@ -33,18 +37,22 @@ test("lost execution results stay uncertain after a zero-reward all-skipped retr
     const original = (await f.store.claim())!;
     // The upstream side effect succeeded, but every result write was lost.
     f.advance(300_001);
+    assert.equal(await f.store.claim(), null);
+    f.advance(360_000);
     const retry = (await f.store.claim())!;
     assert.equal(retry.id, original.id);
     assert.notEqual(retry.lease, original.lease);
     assert.equal(
       await f.store.finish(original.id, original.lease, original.credential.version, {
         status: "completed",
+        ...confirmed,
         expDelta: 10,
       }),
       false,
     );
     await f.store.finish(retry.id, retry.lease, retry.credential.version, {
       status: "completed",
+      ...confirmed,
       expDelta: 0,
       coinDelta: 0,
       batteryDelta: 0,
@@ -197,7 +205,7 @@ test("queue delivery can beat publish bookkeeping and delayed business retries a
       true,
     );
     assert.deepEqual(await f.store.reserveDispatch(), []);
-    f.advance(60_000);
+    f.advance(360_000);
     const [retry] = await f.store.reserveDispatch();
     assert.equal(retry.id, message.id);
     assert.notEqual(retry.token, message.token);
@@ -206,6 +214,7 @@ test("queue delivery can beat publish bookkeeping and delayed business retries a
     assert.ok(second);
     await f.store.finish(second.id, second.lease, second.credential.version, {
       status: "completed",
+      ...confirmed,
     });
     assert.deepEqual(await f.store.reserveDispatch(), []);
   } finally {
@@ -213,16 +222,21 @@ test("queue delivery can beat publish bookkeeping and delayed business retries a
   }
 });
 
-test("a killed queue consumer recovers only after its lease, with at most three business attempts", async () => {
+test("a killed queue consumer recovers only after its lease, with at most five business attempts", async () => {
   const f = fixture();
   try {
     await f.store.enroll(credential("123"));
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
       const [message] = await f.store.reserveDispatch();
       const job = (await f.store.claimQueued(message))!;
       assert.ok(job);
       assert.deepEqual(await f.store.reserveDispatch(), []);
       f.advance(300_001);
+      assert.deepEqual(await f.store.reserveDispatch(), []);
+      if (attempt < 5)
+        f.advance(
+          attempt === 1 ? 360_000 : attempt === 2 ? 1260_000 : attempt === 3 ? 3660_000 : 7260_000,
+        );
     }
     assert.deepEqual(await f.store.reserveDispatch(), []);
     assert.equal((await f.store.dashboard("heybox:123"))?.today?.status, "failed");
@@ -331,8 +345,8 @@ test("idle retry hints respect delayed retries and a revoked process lease", asy
       reason: "upstream",
     });
     assert.equal(await f.store.claim(), null);
-    assert.equal(f.store.retryAfter, 60);
-    f.advance(60_000);
+    assert.ok(f.store.retryAfter >= 300 && f.store.retryAfter <= 360);
+    f.advance(360_000);
     const second = (await f.store.claim())!;
     assert.ok(second);
     await f.store.enroll(credential("123"));
@@ -440,7 +454,7 @@ test("a lease extending past midnight does not delay the cross-day check", async
   const f = fixture();
   try {
     await f.store.enroll(credential("123"));
-    f.advance(86339_000);
+    f.advance(84599_000);
     const old = (await f.store.claim())!;
     assert.ok(old);
     assert.equal(await f.store.claim(), null);
@@ -599,6 +613,8 @@ test("expired leases recover with a new token and reject the old result", async 
     await f.store.enroll(credential("123"));
     const old = (await f.store.claim())!;
     f.advance(301_000);
+    assert.equal(await f.store.claim(), null);
+    f.advance(360_000);
     const fresh = (await f.store.claim())!;
     assert.ok(fresh);
     assert.equal(fresh.id, old.id);
@@ -610,6 +626,7 @@ test("expired leases recover with a new token and reject the old result", async 
     assert.equal(
       await f.store.finish(fresh.id, fresh.lease, fresh.credential.version, {
         status: "completed",
+        ...confirmed,
       }),
       true,
     );
@@ -654,7 +671,7 @@ test("pause lets running work finish; login expiry and deletion still revoke acc
       true,
     );
     assert.equal((await f.store.dashboard(id))?.today?.status, "failed");
-    f.advance(60_000);
+    f.advance(360_000);
     assert.equal(await f.store.claim(), null);
     await f.store.setEnabled(id, true);
     const second = (await f.store.claim())!;
@@ -676,6 +693,7 @@ test("pause lets running work finish; login expiry and deletion still revoke acc
     assert.equal(
       await f.store.finish(third.id, third.lease, third.credential.version, {
         status: "completed",
+        ...confirmed,
       }),
       false,
     );
@@ -700,11 +718,11 @@ test("cross-day execution is stopped and a new day receives a new job", async ()
     f.close();
   }
 });
-test("transient failures back off and stop after three attempts", async () => {
+test("transient failures back off and stop after five attempts", async () => {
   const f = fixture();
   try {
     const id = await f.store.enroll(credential("123"));
-    for (let i = 1; i <= 3; i++) {
+    for (let i = 1; i <= 5; i++) {
       const job = (await f.store.claim())!;
       assert.ok(job);
       assert.equal(
@@ -715,12 +733,12 @@ test("transient failures back off and stop after three attempts", async () => {
         true,
       );
       assert.equal(await f.store.claim(), null);
-      f.advance(180_000);
+      if (i < 5) f.advance(i === 1 ? 360_000 : i === 2 ? 1260_000 : i === 3 ? 3660_000 : 7260_000);
     }
     assert.equal((await f.store.dashboard(id))?.today?.status, "failed");
     assert.equal(await f.store.claim(), null);
     await f.store.enqueue(id, true);
-    assert.ok(await f.store.claim());
+    assert.equal(await f.store.claim(), null);
   } finally {
     f.close();
   }
@@ -831,10 +849,11 @@ test("retries preserve rewards already confirmed by a partially completed attemp
       expDelta: 100,
       coinDelta: 200,
     });
-    f.advance(60_000);
+    f.advance(360_000);
     const next = (await f.store.claim())!;
     await f.store.finish(next.id, next.lease, next.credential.version, {
       status: "completed",
+      ...confirmed,
       expDelta: 30,
       coinDelta: 0,
     });
@@ -860,10 +879,11 @@ test("retries do not turn unknown experience into a confirmed partial total", as
         expDelta: firstDelta,
         coinDelta: 200,
       });
-      f.advance(60_000);
+      f.advance(360_000);
       const next = (await f.store.claim())!;
       await f.store.finish(next.id, next.lease, next.credential.version, {
         status: "completed",
+        ...confirmed,
         expDelta: nextDelta,
         coinDelta: 0,
       });
@@ -886,10 +906,11 @@ test("retries accumulate battery gains and retain earlier executed tasks", async
       batteryDelta: 1,
       execution: { sign: "executed", "1": "skipped" },
     });
-    f.advance(60_000);
+    f.advance(360_000);
     const next = (await f.store.claim())!;
     await f.store.finish(next.id, next.lease, next.credential.version, {
       status: "completed",
+      ...confirmed,
       batteryDelta: 2,
       execution: { sign: "skipped", "1": "skipped", "19": "executed", "31": "executed" },
     });
@@ -918,10 +939,11 @@ test("legacy or missing retry data cannot become a known battery total or an all
         status: "failed",
         batteryDelta: firstDelta,
       });
-      f.advance(60_000);
+      f.advance(360_000);
       const next = (await f.store.claim())!;
       await f.store.finish(next.id, next.lease, next.credential.version, {
         status: "completed",
+        ...confirmed,
         batteryDelta: nextDelta,
         execution: { sign: "skipped", "1": "skipped", "19": "skipped", "31": "skipped" },
       });
@@ -958,20 +980,20 @@ test("history is account-scoped, includes today and exposes a task type for the 
     f.close();
   }
 });
-test("the daily schedule uses Beijing 00:01 across UTC dates", () => {
-  assert.equal(beijingDate(Date.parse("2026-10-26T16:01:00Z")), "2026-10-27");
-  assert.equal(nextRunAt(Date.parse("2026-10-26T16:00:00Z")), Date.parse("2026-10-26T16:01:00Z"));
-  assert.equal(nextRunAt(Date.parse("2026-10-26T16:01:00Z")), Date.parse("2026-10-27T16:01:00Z"));
+test("the daily schedule uses Beijing 00:30 across UTC dates", () => {
+  assert.equal(beijingDate(Date.parse("2026-10-26T16:30:00Z")), "2026-10-27");
+  assert.equal(nextRunAt(Date.parse("2026-10-26T16:00:00Z")), Date.parse("2026-10-26T16:30:00Z"));
+  assert.equal(nextRunAt(Date.parse("2026-10-26T16:30:00Z")), Date.parse("2026-10-27T16:30:00Z"));
 });
 
-test("a new day is enqueued at 00:01 and never at 00:00", async () => {
+test("a new day is enqueued at 00:30 and never at 00:00", async () => {
   const f = fixture();
   try {
     const id = await f.store.enroll(credential("123"));
-    f.advance(86400_000 - 60_000);
+    f.advance(86400_000 - 1800_000);
     await f.store.schedule();
     assert.equal((await f.store.dashboard(id))?.today, null);
-    f.advance(60_000);
+    f.advance(1800_000);
     await f.store.schedule();
     assert.equal((await f.store.dashboard(id))?.today?.status, "queued");
     await f.store.schedule();
@@ -1008,6 +1030,7 @@ test("only an accepted task result can refresh its account profile", async () =>
     assert.equal(
       await f.store.finish(old.id, old.lease, old.credential.version, {
         status: "completed",
+        ...confirmed,
         profile: { nickname: "过期进程" },
       }),
       false,
@@ -1017,6 +1040,7 @@ test("only an accepted task result can refresh its account profile", async () =>
     assert.equal(
       await f.store.finish(current.id, current.lease, current.credential.version, {
         status: "completed",
+        ...confirmed,
         profile: { nickname: "当前昵称", avatar: "https://cdn.max-c.com/current.png" },
       }),
       true,

@@ -4,6 +4,13 @@ import type { client } from "./client.ts";
 export type DashboardData = Awaited<ReturnType<typeof client.dashboard>>;
 const active = (data: DashboardData) => ["queued", "running"].includes(data.today?.status || "");
 
+export function dashboardPollInterval(today: DashboardData["today"] | undefined, now = Date.now()) {
+  return today?.status === "running" ||
+    (today?.status === "queued" && (today.retryAt == null || today.retryAt <= now))
+    ? 5_000
+    : 60_000;
+}
+
 export function createDashboardLoader(
   read: (includeHistory: boolean) => Promise<DashboardData>,
   day = () => beijingDate(),

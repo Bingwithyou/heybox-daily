@@ -1,4 +1,6 @@
+import { retryDelay } from './retry.ts';
 import {
+  DAILY_ATTEMPT_LIMIT,
   beijingDate,
   nextRunAt,
   outcomeSchema,
@@ -29,12 +31,14 @@ type JobRow = {
   lease: string | null;
   result: string | null;
   updated_at: number;
+  available_at: number;
 };
 
 export class Store {
   readonly db: Database;
   readonly now: () => number;
   private retryAfterSeconds = 1800;
+  nextRetryAt: number | null = null;
   get retryAfter() {
     return this.retryAfterSeconds;
   }
@@ -135,9 +139,9 @@ export class Store {
     if (retry)
       statements.push(
         this.sql(
-          `UPDATE jobs SET status='queued',attempts=0,available_at=MAX(?,COALESCE(lease_until,0)),updated_at=?,
+          `UPDATE jobs SET status='queued',available_at=MAX(?,COALESCE(lease_until,0)),updated_at=?,
           queue_token=NULL,queue_published=0,dispatch_until=0
-      WHERE user_id=? AND date=? AND status IN ('failed','cancelled','auth_expired')
+      WHERE user_id=? AND date=? AND attempts<${DAILY_ATTEMPT_LIMIT} AND status IN ('failed','cancelled','auth_expired')
       AND EXISTS(SELECT 1 FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid')${gate}`,
           now,
           now,
@@ -171,7 +175,7 @@ export class Store {
   async schedule() {
     const now = this.now();
     const date = beijingDate(now);
-    if (now >= Date.parse(`${date}T00:01:00+08:00`)) {
+    if (now >= Date.parse(`${date}T00:30:00+08:00`)) {
       const created = await this.sql(
         `INSERT OR IGNORE INTO jobs(id,user_id,date,status,available_at,created_at,updated_at)
         SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-a'||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))),
@@ -232,6 +236,9 @@ export class Store {
   private async recover() {
     const now = this.now();
     await this.db.batch([
+      this.sql(`UPDATE job_attempts SET status='unknown',finished_at=?
+        WHERE status='running' AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=job_attempts.job_id
+          AND (j.status<>'running' OR j.lease IS NOT job_attempts.id OR j.lease_until<? OR j.date<>?))`, now, now, beijingDate(now)),
       this.sql(
         `UPDATE jobs SET status='cancelled',updated_at=? WHERE id IN (
           SELECT id FROM jobs WHERE status IN ('queued','running') AND date<?
@@ -243,14 +250,25 @@ export class Store {
         beijingDate(now),
       ),
       this.sql(
-        `UPDATE jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,lease=NULL,lease_until=NULL,updated_at=?,
+        `UPDATE jobs SET available_at=? + CASE WHEN attempts<=1 THEN 300000 WHEN attempts=2 THEN 1200000 WHEN attempts=3 THEN 3600000 ELSE 7200000 END + abs(random()%60001)
+        WHERE status='running' AND lease_until<?`, now, now,
+      ),
+      this.sql(
+        `UPDATE jobs SET status=CASE WHEN attempts<${DAILY_ATTEMPT_LIMIT} AND available_at<? THEN 'queued' ELSE 'failed' END,lease=NULL,lease_until=NULL,updated_at=?,
         queue_token=NULL,queue_published=0,dispatch_until=0,
         result=json_set(json_remove(COALESCE(result,'{"status":"failed","reason":"timeout"}'),
-          '$.expDelta','$.coinDelta','$.batteryDelta'),'$.uncertain',json('true'))
+          '$.expDelta','$.coinDelta','$.batteryDelta','$.snapshot','$.errors'),'$.uncertain',json('true'),
+          '$.status','failed','$.reason','timeout','$.failure',json_object('category','timeout','stage','lease_recovery','durationMs',MAX(0,?-updated_at)))
         WHERE status='running' AND lease_until<?`,
+        Date.parse(`${beijingDate(now)}T00:00:00+08:00`) + 86400_000,
+        now,
         now,
         now,
       ),
+      this.sql(`UPDATE job_attempts SET retry_at=(SELECT CASE WHEN status='queued' THEN available_at END FROM jobs WHERE id=job_id),
+        result=json_object('status','failed','reason','timeout','uncertain',json('true'),'failure',
+          json_object('category','timeout','stage','lease_recovery','durationMs',MAX(0,?-started_at)))
+        WHERE status='unknown' AND finished_at=? AND EXISTS(SELECT 1 FROM jobs WHERE id=job_id AND lease IS NULL)`, now, now),
     ]);
   }
   async reserveDispatch(limit = 100): Promise<QueueMessage[]> {
@@ -284,13 +302,19 @@ export class Store {
       token,
     ).run();
   }
+  private async beginAttempt(statement: Statement, lease: string): Promise<JobRow | null> {
+    await this.db.batch([statement, this.sql(
+      `INSERT INTO job_attempts(id,job_id,number,started_at,status)
+       SELECT lease,id,attempts,updated_at,'running' FROM jobs WHERE lease=? AND status='running'`, lease)]);
+    return this.sql("SELECT * FROM jobs WHERE lease=? AND status='running'", lease).first<JobRow>();
+  }
   async claimQueued(message: QueueMessage): Promise<Job | null> {
     const now = this.now();
     const lease = crypto.randomUUID();
-    const row = await this.sql(
+    const row = await this.beginAttempt(this.sql(
       `UPDATE jobs SET status='running',attempts=attempts+1,lease=?,lease_until=?,updated_at=?,
       version=(SELECT version FROM hosting WHERE user_id=jobs.user_id)
-      WHERE id=? AND queue_token=? AND status='queued' AND attempts<3 AND available_at<=? AND date=?
+      WHERE id=? AND queue_token=? AND status='queued' AND attempts<${DAILY_ATTEMPT_LIMIT} AND available_at<=? AND date=?
       AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND enabled=1 AND credential_state='valid')
       AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=jobs.user_id AND other.lease_until>=?) RETURNING *`,
       lease,
@@ -301,7 +325,7 @@ export class Store {
       now,
       beijingDate(now),
       now,
-    ).first<JobRow>();
+    ), lease);
     if (!row) return null;
     const credential = await this.sql(
       "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND credential_state='valid'",
@@ -312,7 +336,7 @@ export class Store {
   }
   async deadLetter(message: QueueMessage) {
     // Transport retries are not business attempts, including a failed handback during a pause.
-    // D1 still bounds actual execution to three attempts; retry delivery with a short backoff.
+    // D1 still bounds actual execution to the daily budget; retry delivery with a short backoff.
     await this.deferQueued(message, 60_000);
   }
   async deferQueued(message: QueueMessage, delayMs = 0) {
@@ -330,11 +354,11 @@ export class Store {
     await this.recover();
     const now = this.now();
     const lease = crypto.randomUUID();
-    const row = await this.sql(
+    const row = await this.beginAttempt(this.sql(
       `UPDATE jobs SET status='running',attempts=attempts+1,lease=?,lease_until=?,updated_at=?,
       version=(SELECT version FROM hosting WHERE user_id=jobs.user_id)
       WHERE id=(SELECT j.id FROM jobs j JOIN hosting h ON h.user_id=j.user_id
-        WHERE j.status='queued' AND j.available_at<=? AND j.date=? AND h.enabled=1 AND h.credential_state='valid'
+        WHERE j.status='queued' AND j.attempts<${DAILY_ATTEMPT_LIMIT} AND j.available_at<=? AND j.date=? AND h.enabled=1 AND h.credential_state='valid'
         AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?)
         ORDER BY j.available_at,j.created_at LIMIT 1) RETURNING *`,
       lease,
@@ -343,7 +367,7 @@ export class Store {
       now,
       beijingDate(now),
       now,
-    ).first<JobRow>();
+    ), lease);
     if (!row) {
       await this.nextWorkAt();
       return null;
@@ -385,6 +409,11 @@ export class Store {
   }
   async finish(id: string, lease: string, version: string, outcome: Outcome) {
     const now = this.now();
+    if (outcome.status === 'completed' && (!outcome.snapshot || outcome.snapshot.tasks.length !== 4 ||
+      taskIds.some(id => outcome.snapshot!.tasks.filter(t => t.id === id && t.state === 'finish').length !== 1))) {
+      outcome = { status: 'failed', reason: 'upstream', uncertain: true,
+        failure: { category: 'protocol', stage: 'verify', durationMs: 0 } };
+    }
     // A revoked child acknowledges that it has stopped; its result cannot change the new credential or job outcome.
     const released = await this.sql(
       `UPDATE jobs SET lease=NULL,lease_until=NULL,available_at=MIN(available_at,?)
@@ -396,11 +425,14 @@ export class Store {
     ).first();
     if (released) return false;
     const previous = await this.sql(
-      `SELECT result FROM jobs WHERE id=? AND lease=? AND version=? AND status='running'`,
+      `SELECT result,attempts FROM jobs WHERE id=? AND lease=? AND version=? AND status='running'`,
       id,
       lease,
       version,
-    ).first<{ result: string | null }>();
+    ).first<{ result: string | null; attempts: number }>();
+    const delay = retryDelay(outcome, previous?.attempts ?? DAILY_ATTEMPT_LIMIT);
+    const retryAt = delay === null ? now : now + delay;
+    const retryable = delay !== null && beijingDate(retryAt) === beijingDate(now);
     const old = previous?.result ? outcomeSchema.parse(JSON.parse(previous.result)) : null;
     const uncertain = outcome.uncertain || old?.uncertain || undefined;
     const execution =
@@ -433,17 +465,17 @@ export class Store {
           ? undefined
           : (outcome.coinDelta || 0) + (old?.coinDelta || 0),
     };
-    // Both statements share one D1 transaction. The second can only disable the credential version that actually ran.
+    // The result, attempt and account updates share one transaction and the same version fence.
     await this.db.batch([
       this.sql(
-        `UPDATE jobs SET status=CASE WHEN ?='failed' AND attempts<3
+        `UPDATE jobs SET status=CASE WHEN ?=1 AND attempts<${DAILY_ATTEMPT_LIMIT}
         AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND enabled=1) THEN 'queued' ELSE ? END,
-        available_at=? + attempts*60000,result=?,updated_at=?,lease_until=NULL,
+        available_at=?,result=?,updated_at=?,lease_until=NULL,
         queue_token=NULL,queue_published=0,dispatch_until=0 WHERE id=? AND lease=? AND version=? AND status='running'
         AND lease_until>=? AND date=? AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND version=? AND credential_state='valid')`,
+        retryable ? 1 : 0,
         outcome.status,
-        outcome.status,
-        now,
+        retryAt,
         JSON.stringify(result),
         now,
         id,
@@ -453,6 +485,10 @@ export class Store {
         beijingDate(now),
         version,
       ),
+      this.sql(`UPDATE job_attempts SET status=?,finished_at=?,result=?,
+        retry_at=(SELECT CASE WHEN status='queued' THEN available_at END FROM jobs WHERE id=?)
+        WHERE id=? AND status='running' AND EXISTS(SELECT 1 FROM jobs WHERE id=? AND lease=? AND version=? AND updated_at=? AND status<>'running')`,
+        outcome.status,now,JSON.stringify(outcome),id,lease,id,lease,version,now),
       this.sql(
         `UPDATE hosting SET enabled=0,credential_state='expired',updated_at=? WHERE version=? AND user_id=(
         SELECT user_id FROM jobs WHERE id=? AND lease=? AND version=? AND status='auth_expired' AND updated_at=?)`,
@@ -479,13 +515,15 @@ export class Store {
           ]
         : []),
     ]);
-    return !!(await this.sql(
-      "SELECT id FROM jobs WHERE id=? AND lease=? AND version=? AND updated_at=? AND status<>'running'",
+    const saved = await this.sql(
+      "SELECT status,available_at FROM jobs WHERE id=? AND lease=? AND version=? AND updated_at=? AND status<>'running'",
       id,
       lease,
       version,
       now,
-    ).first());
+    ).first<{ status: string; available_at: number }>();
+    this.nextRetryAt = saved?.status === 'queued' ? saved.available_at : null;
+    return !!saved;
   }
   async setEnabled(userId: string, enabled: boolean) {
     const now = this.now();
@@ -531,8 +569,8 @@ export class Store {
       }>(),
       this.sql(
         includeHistory
-          ? "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? ORDER BY date DESC LIMIT 15"
-          : "SELECT id,date,status,attempts,result,updated_at FROM jobs WHERE user_id=? AND date=? LIMIT 1",
+          ? "SELECT id,date,status,attempts,result,updated_at,available_at FROM jobs WHERE user_id=? ORDER BY date DESC LIMIT 15"
+          : "SELECT id,date,status,attempts,result,updated_at,available_at FROM jobs WHERE user_id=? AND date=? LIMIT 1",
         userId,
         ...(includeHistory ? [] : [today]),
       ).all<JobRow>(),
@@ -544,6 +582,7 @@ export class Store {
       status: row.status,
       attempts: row.attempts,
       updatedAt: row.updated_at,
+      retryAt: row.status === "queued" && row.attempts > 0 ? row.available_at : null,
       result: row.result ? outcomeSchema.parse(JSON.parse(row.result)) : null,
     }));
     return {

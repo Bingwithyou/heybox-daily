@@ -46,7 +46,7 @@ function About() {
         <section className="mt-14 border-t pt-8 text-base leading-7">
           <h2 className="text-xl font-semibold">在线使用</h2>
           <p className="mt-4">
-            用小黑盒手机号和短信验证码登录，首次登录会补跑当天未完成的任务，之后每天北京时间 00:01
+            用小黑盒手机号和短信验证码登录，首次登录会补跑当天未完成的任务，之后每天北京时间 00:30
             开始执行。
           </p>
           <p className="mt-4">

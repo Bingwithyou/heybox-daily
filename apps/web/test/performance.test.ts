@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDashboardLoader, type DashboardData } from "../src/lib/dashboard-loader.ts";
+import {
+  createDashboardLoader,
+  dashboardPollInterval,
+  type DashboardData,
+} from "../src/lib/dashboard-loader.ts";
 import { publicStats } from "../src/server/stats.ts";
 import type { Env } from "../src/server/env.ts";
 
@@ -16,6 +20,7 @@ function dashboard(status = "running", account = "123", day = "2026-10-27"): Das
     status,
     attempts: 1,
     updatedAt: 1,
+    retryAt: null,
     result: null,
   };
   return {
@@ -203,4 +208,14 @@ test("cached statistics retain the five-minute browser TTL when Cloudflare rewri
   assert.equal(response.headers.get("cache-control"), "public, max-age=300");
   assert.equal(response.headers.get("age"), "30");
   assert.deepEqual(await response.json(), { accounts: 7 });
+});
+
+test("future retries poll slowly until due while running work polls quickly", () => {
+  const today = dashboard("queued").today!;
+  assert.equal(dashboardPollInterval({ ...today, retryAt: 60001 }, 1), 60000);
+  assert.equal(dashboardPollInterval({ ...today, retryAt: 60001 }, 60001), 5000);
+  assert.equal(dashboardPollInterval({ ...today, retryAt: null }, 1), 5000);
+  assert.equal(dashboardPollInterval({ ...today, status: "running", retryAt: 60001 }, 1), 5000);
+  assert.equal(dashboardPollInterval({ ...today, status: "completed" }, 1), 60000);
+  assert.equal(dashboardPollInterval(undefined, 1), 60000);
 });

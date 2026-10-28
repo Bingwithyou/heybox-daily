@@ -38,7 +38,7 @@ export async function consume(batch: MessageBatch<unknown>, env: Env, execute: (
       if (!job) { message.ack(); continue; }
       let result: Outcome & { category?: string };
       try { result = await execute(job, env.CREDENTIAL_KEY, store); }
-      catch { result = { status: 'failed', reason: 'timeout', category: 'internal' }; }
+      catch { result = { status: 'failed', reason: 'upstream', uncertain: true, failure: { category: 'internal', stage: 'execute', durationMs: Math.round(performance.now() - started) } }; }
       const outcome = outcomeSchema.parse(result);
       let accepted = false;
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -48,8 +48,9 @@ export async function consume(batch: MessageBatch<unknown>, env: Env, execute: (
           await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
         }
       }
-      console.log(JSON.stringify({ event: 'executor_task_finished', jobId: job.id, outcome: outcome.status,
-        category: result.category, accepted, durationMs: Math.round(performance.now() - started) }));
+      console.log(JSON.stringify({ event: 'executor_task_finished', jobId: job.id, attemptId: job.lease, outcome: outcome.status, failure: outcome.failure,
+        category: result.category, accepted, nextRetryAt: accepted ? store.nextRetryAt : null,
+        durationMs: Math.round(performance.now() - started) }));
       message.ack();
     } catch {
       console.warn(JSON.stringify({ event: 'executor_delivery_failed', jobId: parsed.data.id }));

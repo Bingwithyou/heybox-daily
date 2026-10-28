@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { shareEvent } from './report.js';
 import { accountProfile } from './profile.js';
+import { readSignHistory, signBalance, signFailure, signResponse, type SignDiagnostic } from './sign-diagnostics.js';
 import type { FeedResult, Inspection, ReviewShareResult, ShareContent, ShareId, SignState, TaskClient, TaskExecution, TaskListResult, TaskSnapshot } from './types.js';
 
 const shareIds: ShareId[] = ['1', '19', '31'];
@@ -81,14 +82,19 @@ export async function inspect(client: Pick<TaskClient, 'tasks' | 'signState'>, a
   return { ...current, signed: signedToday(sign, now()) };
 }
 
-interface RunOptions { now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot, expDelta: number | undefined) => void; onTask?: (id: keyof TaskExecution, action: 'executed' | 'skipped') => void }
-export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {}, onTask = () => {} }: RunOptions = {}) {
+interface RunOptions { onSignDiagnostic?: (event: SignDiagnostic) => void; onStage?: (stage: string) => void; now?: () => number; sleep?: (ms: number) => Promise<unknown>; log?: (message: string) => void; checkpoint?: () => Promise<void>; onSnapshot?: (value: TaskSnapshot, expDelta: number | undefined) => void; onTask?: (id: keyof TaskExecution, action: 'executed' | 'skipped') => void }
+export async function runDaily(client: TaskClient, account: string, { now = Date.now, sleep = setTimeout, log = console.log, checkpoint = async () => {}, onSnapshot = () => {}, onTask = () => {}, onStage = () => {}, onSignDiagnostic }: RunOptions = {}) {
+  const diagnose = (event: Omit<SignDiagnostic, 'at'>) => {
+    try { onSignDiagnostic?.({ ...event, at: new Date(now()).toISOString() }); }
+    catch { /* Diagnostic output must not change task execution. */ }
+  };
   const execution: TaskExecution = {};
   const recordTask = (id: keyof TaskExecution, action: 'executed' | 'skipped') => {
     execution[id] = action;
     onTask(id, action);
   };
   await checkpoint();
+  onStage('inspect');
   const before = await inspect(client, account, now);
   let expDelta: number | undefined = 0;
   onSnapshot(before, expDelta);
@@ -99,21 +105,34 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     current = value;
     onSnapshot(current, expDelta);
   };
+  onStage('sign');
   if (!before.signed) {
+    if (onSignDiagnostic) diagnose({ phase: 'before', balance: signBalance(before), history: await readSignHistory(client, now()) });
     await checkpoint();
     recordTask('sign', 'executed');
-    await client.sign();
-    let verified = false;
-    for (const delay of delays) {
-      await sleep(delay);
-      if (signedToday(await client.signState(), now())) { verified = true; break; }
+    try {
+      const response = await client.sign();
+      diagnose({ phase: 'submitted', response: signResponse(response) });
+      let verified = false;
+      let state: SignState | undefined;
+      for (const delay of delays) {
+        await sleep(delay);
+        state = await client.signState();
+        if (signedToday(state, now())) { verified = true; break; }
+      }
+      if (!verified) throw new Error('签到未确认到账，任务已停止');
+      log('签到完成');
+      record(snapshot(await client.tasks(), account));
+      if (onSignDiagnostic) diagnose({ phase: 'verified', response: signResponse(state), balance: signBalance(current),
+        history: await readSignHistory(client, now()) });
+    } catch (error) {
+      diagnose({ phase: 'failed', error: signFailure(error) });
+      throw error;
     }
-    if (!verified) throw new Error('签到未确认到账，任务已停止');
-    log('签到完成');
-    record(snapshot(await client.tasks(), account));
   } else { recordTask('sign', 'skipped'); log('今天已签到'); }
 
   for (const id of shareIds) {
+    onStage(`share_${id}`);
     if (current.tasks.find(task => task.id === id)!.state === 'finish') { recordTask(id, 'skipped'); log(`${names[id]}已完成，跳过`); continue; }
     await checkpoint();
     const addition = await selectShare(client, id);
@@ -133,6 +152,7 @@ export async function runDaily(client: TaskClient, account: string, { now = Date
     if (!settled) throw new Error(`${names[id]}上报后未结算，请稍后重新检查`);
     log(`${names[id]}完成`);
   }
+  onStage('verify');
   const after = await inspect(client, account, now);
   record(after);
   if (!after.signed || shareIds.some(id => after.tasks.find(task => task.id === id)!.state !== 'finish')) {

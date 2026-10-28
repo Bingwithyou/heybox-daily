@@ -1,12 +1,16 @@
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { taskIds, taskNames, publicReasons } from "@heybox/contracts";
+import { DAILY_ATTEMPT_LIMIT, taskIds, taskNames, publicReasons } from "@heybox/contracts";
 import { Button } from "../components/ui/button";
 import { Switch } from "../components/ui/switch";
 import { useAccount } from "../components/layout";
 import { client } from "../lib/client";
 import { privatePageHead } from "../lib/seo";
-import { createDashboardLoader, type DashboardData } from "../lib/dashboard-loader";
+import {
+  createDashboardLoader,
+  dashboardPollInterval,
+  type DashboardData,
+} from "../lib/dashboard-loader";
 import { Activities } from "../components/activities";
 import { Rewards } from "../components/rewards";
 import { TaskStatus } from "../components/task-status";
@@ -51,7 +55,7 @@ function Dashboard() {
     },
     [navigate, setAccount, loader],
   );
-  const polling = data?.today?.status === "running" || data?.today?.status === "queued";
+  const pollingInterval = dashboardPollInterval(data?.today);
   useEffect(() => {
     void refresh();
     const focus = () => {
@@ -64,14 +68,11 @@ function Dashboard() {
     };
   }, [refresh]);
   useEffect(() => {
-    const timer = window.setInterval(
-      () => {
-        if (document.visibilityState === "visible") void refresh();
-      },
-      polling ? 5_000 : 60_000,
-    );
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, pollingInterval);
     return () => clearInterval(timer);
-  }, [refresh, polling]);
+  }, [refresh, pollingInterval]);
   async function change(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -157,17 +158,29 @@ function Dashboard() {
           {error}
         </p>
       )}
-      {!expired && data.enabled && !running && today?.status !== "completed" && (
-        <div className="mt-6 flex justify-end">
-          <Button
-            className="h-10 px-4 text-base"
-            disabled={busy || running}
-            onClick={() => change(() => client.retry({ expectedAccount: data.account }))}
-          >
-            重试未完成任务
-          </Button>
-        </div>
-      )}
+      {!expired &&
+        data.enabled &&
+        !running &&
+        today?.status !== "completed" &&
+        (today?.attempts ?? 0) < DAILY_ATTEMPT_LIMIT && (
+          <div className="mt-6 flex justify-end">
+            <Button
+              className="h-10 px-4 text-base"
+              disabled={busy || running}
+              onClick={() => change(() => client.retry({ expectedAccount: data.account }))}
+            >
+              重试未完成任务
+            </Button>
+          </div>
+        )}
+      {!expired &&
+        !running &&
+        today?.status !== "completed" &&
+        (today?.attempts ?? 0) >= DAILY_ATTEMPT_LIMIT && (
+          <p className="mt-6 text-sm text-muted-foreground">
+            今天已达到 {DAILY_ATTEMPT_LIMIT} 次执行上限。
+          </p>
+        )}
       <div className="mt-8" aria-label="每日任务状态">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-4 border-b pb-3 text-sm text-muted-foreground sm:grid-cols-[minmax(0,1fr)_minmax(140px,.7fr)_140px]">
           <span>任务</span>
@@ -191,8 +204,14 @@ function Dashboard() {
       </div>
       {reason && reason !== "auth_expired" && reason !== "cancelled" && (
         <p className="mt-4 text-sm text-muted-foreground">
-          {publicReasons[reason]}
-          {today?.status === "queued" ? "，稍后自动重试" : ""}
+          {today?.result?.failure?.category === "rate_limit"
+            ? "小黑盒请求限流"
+            : today?.result?.failure?.category === "captcha"
+              ? "需要在小黑盒完成人机验证"
+              : today?.result?.failure?.category === "protocol"
+                ? "小黑盒接口返回异常，暂未确认完成"
+                : publicReasons[reason]}
+          {today?.retryAt ? `，预计 ${dateTime(today.retryAt)} 自动重试` : ""}
         </p>
       )}
       {today?.result && (

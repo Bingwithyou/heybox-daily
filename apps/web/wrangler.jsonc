@@ -24,7 +24,7 @@
       "migrations_dir": "migrations",
     },
   ],
-  "triggers": { "crons": ["1 * * * *"] },
+  "triggers": { "crons": ["30 * * * *"] },
   "services": [{ "binding": "EXECUTOR", "service": "heybox-executor" }],
   "vars": {
     "SITE_URL": "https://heybox.cansiny.top",

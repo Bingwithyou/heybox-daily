@@ -1,3 +1,4 @@
+import { DailyTrace } from './daily-trace.ts';
 import { HeyboxClient, HeyboxApiError } from 'heybox-daily/client';
 import { runDaily, inspect, experienceDelta } from 'heybox-daily/tasks';
 import { ActivityError, listActivities, participateActivity } from 'heybox-daily/activities';
@@ -30,6 +31,7 @@ function publicSnapshot(value: Inspection): TaskSnapshot {
 }
 export async function executeDaily(job: Job, key: string, store: Pick<Store, 'heartbeat'>, fetchImpl: typeof fetch = fetch): Promise<Outcome & { category?: string }> {
   const scope = deadline(240_000, fetchImpl);
+  const trace = new DailyTrace(job);
   try {
     const config = decryptCredential(job.credential, key);
     const client = new HeyboxClient(config, { fetchImpl: scope.fetch });
@@ -43,27 +45,40 @@ export async function executeDaily(job: Job, key: string, store: Pick<Store, 'he
     const execution: NonNullable<Outcome['execution']> = {};
     try {
       const result = await runDaily(client, config.session.heybox_id, { log: () => {}, checkpoint: check, sleep: scope.sleep,
+        onSignDiagnostic: diagnostic => console.log(JSON.stringify({ event: 'executor_sign_diagnostic', jobId: job.id, ...diagnostic })),
         onSnapshot: (value, delta) => { before ||= value; latest = value; expDelta = delta; },
-        onTask: (id, action) => { execution[id] = action; } });
+        onTask: (id, action) => { execution[id] = action; }, onStage: stage => { trace.stage = stage; } });
       await check(true);
       return { status: 'completed', expDelta: result.expDelta, coinDelta: result.coinDelta,
         batteryDelta: result.batteryDelta, execution, profile: result.snapshot.profile, snapshot: publicSnapshot(result.snapshot) };
     } catch (error) {
       const text = error instanceof Error ? error.message : '';
       if (text === 'cancelled' || text === 'cross_day') return { status: 'cancelled', reason: text, execution };
-      if (/登录已过期|登录已失效|设备令牌无效/.test(text)) return { status: 'auth_expired', reason: 'auth_expired', execution };
+      const failure = trace.fail(error, scope.signal.aborted);
+      if (failure.category === 'auth') return { status: 'auth_expired', reason: 'auth_expired', execution, failure, errors: trace.errors };
       let snapshot: TaskSnapshot | undefined;
       try {
+        trace.stage = 'reconcile';
         await check(true);
         const state = await inspect(client, config.session.heybox_id);
+        await check(true);
         const gain = latest && experienceDelta(latest, state);
         expDelta = expDelta === undefined || gain === undefined ? undefined : expDelta + gain;
         latest = state; snapshot = publicSnapshot(state);
-      } catch { /* A failed observation cannot become a confirmed result. */ }
+      } catch (observationError) {
+        const observationFailure = trace.fail(observationError, scope.signal.aborted);
+        const stop = observationError instanceof Error ? observationError.message : '';
+        if (stop === 'cancelled' || stop === 'cross_day') return { status: 'cancelled', reason: stop, execution, failure, errors: trace.errors };
+        if (observationFailure.category === 'auth') return { status: 'auth_expired', reason: 'auth_expired', execution,
+          uncertain: true, failure: observationFailure, errors: trace.errors };
+      }
+      const confirmed = snapshot?.tasks.every(task => task.state === 'finish');
+      // An ambiguous write can be confirmed by a fresh read; its reward remains unknown.
+      if (confirmed) return { status: 'completed', snapshot, execution, uncertain: true, failure, errors: trace.errors };
       return { status: 'failed', reason: scope.signal.aborted ? 'timeout' : 'upstream',
-        category: scope.signal.aborted ? 'timeout' : failureCategory(error), snapshot, execution, expDelta,
-        coinDelta: before && latest ? latest.coin - before.coin : undefined,
-        batteryDelta: before?.battery === undefined || latest?.battery === undefined ? undefined : latest.battery - before.battery };
+        category: failure.category, failure, errors: trace.errors, snapshot, execution, uncertain: !snapshot || undefined, expDelta: snapshot ? expDelta : undefined,
+        coinDelta: snapshot && before && latest ? latest.coin - before.coin : undefined,
+        batteryDelta: !snapshot || before?.battery === undefined || latest?.battery === undefined ? undefined : latest.battery - before.battery };
     }
   } finally { scope.close(); }
 }

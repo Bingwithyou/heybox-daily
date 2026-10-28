@@ -12,6 +12,7 @@ import { runnerRequest } from "./security.ts";
 import { boundedBody, sameOrigin, serviceAuthorized } from "@heybox/hosting/security";
 import { Store } from "@heybox/hosting/store";
 import { publicStats } from "./stats.ts";
+import { notifyRunner } from "./notify.ts";
 
 const rpc = new RPCHandler(router);
 const authPaths = new Set([
@@ -49,6 +50,9 @@ export async function api(
     if (!(await serviceAuthorized(request, env.RUNNER_SERVICE_TOKEN)))
       return new Response(null, { status: 401 });
     if (request.method !== "POST") return new Response(null, { status: 405 });
+    if (path === "/internal/executor/wake") {
+      return new Response(null, { status: (await notifyRunner(env)) ? 204 : 503 });
+    }
     const store = new Store(env.DB);
     try {
       if (path === "/internal/claim") {
