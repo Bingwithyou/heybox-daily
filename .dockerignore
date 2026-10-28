@@ -10,6 +10,8 @@
 !apps/runner/src/**
 !packages/contracts/package.json
 !packages/contracts/src/**
+!packages/hosting/package.json
+!packages/hosting/src/**
 !third-party/*-LICENSE
 !LICENSE
 !NOTICE.md
