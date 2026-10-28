@@ -109,7 +109,7 @@ export async function api(
     try {
       const body = await boundedBody(request);
       const headers = new Headers(request.headers);
-      request = new Request(request.url, { method: "POST", headers, body });
+      request = new Request(request.url, { method: "POST", headers, body, signal: request.signal });
     } catch {
       return new Response(null, { status: 413 });
     }
