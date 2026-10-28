@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TokenQueue, createTokenServer } from '../src/token-service.ts';
 import { LoginTiming, loginTimingHeader } from '@heybox/contracts';
+import { TokenGenerationError } from '../src/token-diagnostic.ts';
 
 test('token initialization has four slots and FIFO admission independent of login verification', async () => {
   const starts: number[] = []; const releases: Array<() => void> = []; let n = 0;
@@ -70,5 +71,33 @@ test('token failures retain queue and generation timing without logging token or
     assert.equal(log.event, 'device_token_failed');
     assert.ok(log.stages.token_queue >= 0 && log.stages.token_generate >= 0);
     for (const secret of ['secret upstream error', 'private-invalid-id', 'a'.repeat(64)]) assert.ok(!messages[0].includes(secret));
+  } finally { queue.stop(); await new Promise<void>(r => server.close(() => r())); }
+});
+
+test('attempt diagnostics and detailed timings reach service logs without reaching the HTTP error body', async t => {
+  const messages: string[] = [];
+  t.mock.method(console, 'warn', (line: string) => messages.push(line));
+  const diagnostic = { stage: 'request_token', sdkCode: -1, networkCode: 'ETIMEDOUT', networkPhase: 'tls' } as const;
+  const queue = new TokenQueue(async (_signal, timing, onAttempt) => {
+    timing!.add('token_tls', 3000);
+    onAttempt!({ attempt: 1, diagnostic, retry: true });
+    throw new TokenGenerationError(diagnostic);
+  });
+  const server = createTokenServer(queue, 'a'.repeat(64));
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/token`, { method: 'POST', body: '{}',
+      headers: { authorization: 'Bearer ' + 'a'.repeat(64) } });
+    assert.equal(response.status, 503);
+    assert.match(response.headers.get('server-timing')!, /token_tls;dur=3000/);
+    assert.ok(!(await response.text()).includes('ETIMEDOUT'));
+    assert.equal(messages.length, 2);
+    for (const message of messages) {
+      const log = JSON.parse(message);
+      assert.equal(log.requestId, response.headers.get(loginTimingHeader));
+      assert.deepEqual(log.diagnostic, diagnostic);
+    }
+    assert.equal(JSON.parse(messages[0]).retry, true);
   } finally { queue.stop(); await new Promise<void>(r => server.close(() => r())); }
 });

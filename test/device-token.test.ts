@@ -60,6 +60,7 @@ test('pending and malformed device tokens cannot complete login', async () => {
       const diagnostic = errorDiagnostic(error);
       assert.equal(diagnostic.stage, 'wait_token');
       assert.match(diagnostic.cause?.message || '', /超时/);
+      assert.equal(diagnostic.cause?.code, 'ETIMEDOUT');
       return true;
     });
   }
@@ -99,9 +100,21 @@ test('SDK HTTP failures are surfaced without evaluating response text', async ()
   await assert.rejects(getDeviceToken({ fetchImpl: async () => new Response('unavailable', { status: 503 }) }), error => {
     const diagnostic = errorDiagnostic(error);
     assert.equal(diagnostic.stage, 'download_sdk');
-    assert.match(diagnostic.cause?.message || '', /503/);
+    assert.equal(diagnostic.httpStatus, 503);
     return true;
   });
+});
+
+test('SDK phases are measured for successful generation and failures', async () => {
+  for (const fails of [false, true]) {
+    const timings: Record<string, number> = {};
+    const result = getDeviceToken({ loadSdk: source(fails ? "throw new Error('failed')" : `SMSdk.getDeviceId=()=>'${token}'`),
+      onTiming: (stage, duration) => { timings[stage] = duration; } });
+    if (fails) await assert.rejects(result); else assert.equal(await result, token);
+    for (const stage of ['token_sdk_download', 'token_initialize', 'token_sdk_execute'])
+      assert.ok(Number.isFinite(timings[stage]) && timings[stage] >= 0, stage);
+    if (!fails) assert.ok(timings.token_wait >= 0);
+  }
 });
 
 test('SDK errors reject before a later token can hide the failure', async () => {

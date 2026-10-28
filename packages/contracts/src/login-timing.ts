@@ -1,7 +1,8 @@
 export const loginTimingHeader = 'x-heybox-request-id';
 const stages = ['auth_quota', 'web_accounts', 'sms_quota', 'sms_cooldown', 'executor', 'challenge_load',
   'challenge_save', 'challenge_clear', 'challenge_total', 'token_http', 'token_service',
-  'token_queue', 'token_generate', 'sms_upstream', 'verify_upstream', 'challenge_prepare', 'login_prepare', 'challenge_begin'] as const;
+  'token_queue', 'token_generate', 'sms_upstream', 'verify_upstream', 'challenge_prepare', 'login_prepare', 'challenge_begin',
+  'token_sdk_download', 'token_initialize', 'token_sdk_execute', 'token_wait', 'token_upstream', 'token_dns', 'token_tcp', 'token_tls'] as const;
 export type LoginStage = typeof stages[number];
 
 // Only numeric durations and a random correlation ID may cross service boundaries.

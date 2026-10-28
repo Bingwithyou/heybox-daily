@@ -13,6 +13,8 @@ export interface ErrorDiagnostic {
   httpStatus?: number;
   upstreamCode?: number;
   requestDurationMs?: number;
+  networkCode?: string;
+  networkPhase?: string;
   cause?: ErrorDiagnostic;
 }
 
@@ -47,6 +49,10 @@ export function errorDiagnostic(error: unknown, secrets: string[] = [], depth = 
   if ('code' in error && typeof error.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.code)) diagnostic.code = error.code;
   if (error instanceof DeviceTokenError) {
     diagnostic.stage = error.stage;
+    if (error.details.networkCode && /^[A-Z][A-Z0-9_]{1,63}$/.test(error.details.networkCode))
+      diagnostic.networkCode = error.details.networkCode;
+    if (error.details.networkPhase && ['dns', 'tcp', 'tls', 'response'].includes(error.details.networkPhase))
+      diagnostic.networkPhase = error.details.networkPhase;
     const fields = [['sdkCode', -4, -1], ['httpStatus', 0, 599],
       ['upstreamCode', 0, 999_999], ['requestDurationMs', 0, 120_000]] as const;
     for (const [key, min, max] of fields) {

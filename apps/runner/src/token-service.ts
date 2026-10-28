@@ -1,11 +1,13 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { authorized } from './server.ts';
 import { LoginTiming, loginTimingHeader } from '@heybox/contracts';
+import { TokenGenerationError, type TokenAttempt } from './token-diagnostic.ts';
 
 type Waiting = { signal: AbortSignal; resolve(value: string): void; reject(error: unknown): void; timer: ReturnType<typeof setTimeout>;
-  cancel(): void; queuedAt: number; timing?: LoginTiming };
+  cancel(): void; queuedAt: number; timing?: LoginTiming; onAttempt?: (value: TokenAttempt) => void };
+type Execute = (signal: AbortSignal, timing?: LoginTiming, onAttempt?: (value: TokenAttempt) => void) => Promise<string>;
 export class TokenQueue {
-  private readonly execute: (signal: AbortSignal) => Promise<string>;
+  private readonly execute: Execute;
   private readonly concurrency: number;
   private readonly maxPending: number;
   private readonly waitMs: number;
@@ -14,11 +16,11 @@ export class TokenQueue {
   private stopping = false;
   get active() { return this.running; }
   get pending() { return this.waiting.length; }
-  constructor(execute: (signal: AbortSignal) => Promise<string>, options: { concurrency?: number; maxPending?: number; waitMs?: number } = {}) {
+  constructor(execute: Execute, options: { concurrency?: number; maxPending?: number; waitMs?: number } = {}) {
     this.execute = execute; this.concurrency = options.concurrency ?? 4;
     this.maxPending = options.maxPending ?? 16; this.waitMs = options.waitMs ?? 15_000;
   }
-  run(signal = new AbortController().signal, timing?: LoginTiming): Promise<string> {
+  run(signal = new AbortController().signal, timing?: LoginTiming, onAttempt?: (value: TokenAttempt) => void): Promise<string> {
     if (this.stopping || this.waiting.length >= this.maxPending) return Promise.reject(new Error('设备令牌服务繁忙'));
     if (signal.aborted) return Promise.reject(signal.reason);
     return new Promise((resolve, reject) => {
@@ -28,7 +30,7 @@ export class TokenQueue {
         timing?.add('token_queue', performance.now() - item.queuedAt);
         clearTimeout(item.timer); signal.removeEventListener('abort', item.cancel); reject(error);
       };
-      const item: Waiting = { signal, resolve, reject, timing, queuedAt: performance.now(), cancel: () => remove(signal.reason),
+      const item: Waiting = { signal, resolve, reject, timing, onAttempt, queuedAt: performance.now(), cancel: () => remove(signal.reason),
         timer: setTimeout(() => remove(new Error('设备令牌等待超时')), this.waitMs) };
       signal.addEventListener('abort', item.cancel, { once: true });
       this.waiting.push(item); this.pump();
@@ -41,7 +43,8 @@ export class TokenQueue {
       if (item.signal.aborted) { item.reject(item.signal.reason); continue; }
       this.running++;
       item.timing?.add('token_queue', performance.now() - item.queuedAt);
-      const operation = item.timing ? item.timing.measure('token_generate', () => this.execute(item.signal)) : this.execute(item.signal);
+      const execute = () => this.execute(item.signal, item.timing, item.onAttempt);
+      const operation = item.timing ? item.timing.measure('token_generate', execute) : execute();
       operation.then(item.resolve, item.reject).finally(() => { this.running--; this.pump(); });
     }
   }
@@ -83,14 +86,17 @@ export function createTokenServer(queue: TokenQueue, token: string, poolState?: 
       return { requestId: timing.id, durationMs: Math.round(performance.now() - started), stages: timing.values };
     };
     try {
-      const value = await queue.run(controller.signal, timing);
+      const value = await queue.run(controller.signal, timing, value => {
+        console.warn(JSON.stringify({ event: 'device_token_attempt_failed', requestId: timing.id, ...value }));
+      });
       const metrics = finishTiming();
       response.end(JSON.stringify({ token: value }));
       console.log(JSON.stringify({ event: 'device_token_finished', ...metrics }));
-    } catch {
+    } catch (error) {
       const metrics = finishTiming();
       if (!response.destroyed) response.writeHead(503).end('{"error":"设备令牌服务暂时繁忙，请稍后再试"}');
-      console.warn(JSON.stringify({ event: 'device_token_failed', ...metrics }));
+      console.warn(JSON.stringify({ event: 'device_token_failed', ...metrics,
+        ...(error instanceof TokenGenerationError ? { diagnostic: error.diagnostic } : {}) }));
     }
   });
   server.requestTimeout = 50_000; server.headersTimeout = 10_000;

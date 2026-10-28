@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TokenPool } from '../src/token-pool.ts';
+import { LoginTiming } from '@heybox/contracts';
 
 async function until(check: () => boolean) {
   const end = Date.now() + 5000;
@@ -107,4 +108,87 @@ test('startup and generation timeouts terminate the child without reusing it', a
   await until(() => running.snapshot().ready === 1);
   await assert.rejects(running.generate(new AbortController().signal));
   assert.equal(running.snapshot().children, 0);
+});
+
+test('transient token failure retries once in a fresh process and retains safe diagnostics and timings', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'token-retry-'));
+  const childPath = join(dir, 'child.mjs');
+  const marker = join(dir, 'attempts');
+  await writeFile(childPath, `
+    import fs from 'node:fs';
+    process.send({type:'ready'});
+    process.once('message', () => {
+      const file = ${JSON.stringify(marker)};
+      const attempt = fs.existsSync(file) ? 2 : 1;
+      fs.appendFileSync(file, String(process.pid)+'\\n');
+      const timing = 'token_upstream;dur=3';
+      if (attempt === 1) process.send({type:'error', timing, diagnostic:{stage:'request_token', sdkCode:-1,
+        networkCode:'ETIMEDOUT', networkPhase:'tls', message:'private-token', httpStatus:0}}, () => process.exit(1));
+      else process.send({type:'token', timing, token:'B'+'x'.repeat(88)}, () => process.exit(0));
+    });
+  `);
+  const pool = new TokenPool({ childPath, prewarm: false });
+  t.after(async () => { await pool.stop(); await rm(dir, { recursive: true, force: true }); });
+  const timing = new LoginTiming(); const attempts: unknown[] = [];
+  assert.match(await pool.generate(new AbortController().signal, timing, value => attempts.push(value)), /^B/);
+  assert.equal(timing.values.token_upstream, 6);
+  assert.deepEqual(attempts, [{ attempt: 1, diagnostic: { stage:'request_token', sdkCode:-1,
+    networkCode:'ETIMEDOUT', networkPhase:'tls', httpStatus:0 }, retry: true }]);
+  const { readFile } = await import('node:fs/promises');
+  const pids = (await readFile(marker, 'utf8')).trim().split('\n');
+  assert.equal(new Set(pids).size, 2);
+});
+
+test('retry is bounded and integrity, rejection, cancellation and malformed errors are not retried', async t => {
+  for (const [diagnostic, expected] of [
+    [{ stage: 'request_token', sdkCode: -1, networkCode: 'ECONNRESET' }, 2],
+    [{ stage: 'request_token', sdkCode: -2, httpStatus: 503 }, 2],
+    [{ stage: 'sdk_integrity' }, 1], [{ stage: 'request_token', sdkCode: -3, upstreamCode: 1902 }, 1],
+    [{ stage: 'request_token', sdkCode: -2, httpStatus: 403 }, 1], [{ stage: 'private-secret' }, 1],
+    [{ stage: 'wait_token' }, 1], [{ stage: 'wait_token', networkCode: 'ETIMEDOUT' }, 2],
+    [{ stage: 'execute_sdk' }, 1],
+  ] as const) {
+    const pool = await fixture(t, `process.removeAllListeners('message'); process.on('message', () =>
+      process.send({type:'error',diagnostic:${JSON.stringify(diagnostic)}}, () => process.exit(1)));`, { prewarm:false });
+    const attempts: unknown[] = [];
+    await assert.rejects(pool.generate(new AbortController().signal, undefined, value => attempts.push(value)));
+    assert.equal(attempts.length, expected);
+    assert.ok(!JSON.stringify(attempts).includes('private-secret'));
+  }
+  const pool = await fixture(t, '', { prewarm:false });
+  const controller = new AbortController(); const attempts: unknown[] = [];
+  const result = pool.generate(controller.signal, undefined, value => attempts.push(value));
+  controller.abort(); await assert.rejects(result);
+  assert.equal(attempts.length, 0);
+  assert.equal(pool.snapshot().children, 0);
+});
+
+test('cancellation between attempts prevents retry and both attempts share one deadline', async t => {
+  const script = `process.on('message', () => setTimeout(() => process.send({type:'error',
+    diagnostic:{stage:'request_token',sdkCode:-1,networkCode:'ETIMEDOUT'}}, () => process.exit(1)), 40));`;
+  const pool = await fixture(t, script, { requestMs: 150, prewarm: false });
+  const controller = new AbortController(); let calls = 0;
+  await assert.rejects(pool.generate(controller.signal, undefined, () => { calls++; controller.abort(); }));
+  assert.equal(calls, 1);
+  assert.equal(pool.snapshot().children, 0);
+  const dir = await mkdtemp(join(tmpdir(), 'token-deadline-'));
+  const childPath = join(dir, 'child.mjs');
+  await writeFile(childPath, `
+    import fs from 'node:fs';
+    process.send({type:'ready'});
+    process.once('message', () => {
+      const marker = new URL('./attempted', import.meta.url);
+      if (fs.existsSync(marker)) { setInterval(() => {}, 1000); return; }
+      fs.writeFileSync(marker, 'yes');
+      process.send({type:'error', diagnostic:{stage:'request_token',sdkCode:-1}}, () => process.exit(1));
+    });
+  `);
+  const bounded = new TokenPool({ childPath, prewarm: false, requestMs: 250 });
+  t.after(async () => { await bounded.stop(); await rm(dir, { recursive:true, force:true }); });
+  const failures: Array<{ diagnostic: { stage: string } }> = [];
+  const start = performance.now();
+  await assert.rejects(bounded.generate(new AbortController().signal, undefined, value => failures.push(value)));
+  assert.equal(failures.at(-1)!.diagnostic.stage, 'deadline');
+  assert.ok(performance.now() - start < 800);
+  assert.equal(bounded.snapshot().children, 0);
 });

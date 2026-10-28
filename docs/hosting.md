@@ -34,9 +34,9 @@ pnpm --filter @heybox/web test:integration
 
 ### 发码耗时诊断
 
-设备令牌服务默认保留一个只加载依赖和指纹生成器的空闲子进程。它不提前下载 SDK、不生成指纹或令牌；每次请求创建新的指纹和 DOM，子进程只使用一次。空闲、启动中及执行中的子进程合计最多 4 个；完成退出后再补充空闲进程，避免初始化抢占当前请求的 CPU。失败补充有 1 秒退避；30 秒请求上限、断连取消和退出清理仍生效。认证的 `/health` 返回 `pool` 的总进程数、空闲数、就绪数和活跃数，不包含 PID 或凭据。
+设备令牌服务默认保留一个只加载依赖和指纹生成器的空闲子进程。它不提前下载 SDK、不生成指纹或令牌；每次请求创建新的指纹和 DOM，子进程只使用一次。空闲、启动中及执行中的子进程合计最多 4 个；完成退出后再补充空闲进程，避免初始化抢占当前请求的 CPU。失败补充有 1 秒退避；30 秒请求上限包含最多两次生成尝试，断连取消和退出清理仍生效。认证的 `/health` 返回 `pool` 的总进程数、空闲数、就绪数和活跃数，不包含 PID 或凭据。
 
-执行 Worker 默认同时初始化独立登录 DO 和请求 VPS 令牌，两项成功后才调用 DO 的 begin。预备调用不保存手机号或令牌、不设 alarm、不发短信；即使期间 DO 被回收，begin 也会重新加载并持久化状态后再发码。准备或发码失败不自动重发。`executor_login_preparation` 记录 `challenge_prepare`（DO 预备往返）、`login_prepare`（两项并行等待）和 `challenge_begin`（后续发码往返）；并行阶段不可简单相加。
+执行 Worker 默认同时初始化独立登录 DO 和请求 VPS 令牌，两项成功后才调用 DO 的 begin。预备调用不保存手机号或令牌、不设 alarm、不发短信；即使期间 DO 被回收，begin 也会重新加载并持久化状态后再发码。DO 准备失败不调用发码，短信发码失败不自动重发。`executor_login_preparation` 记录 `challenge_prepare`（DO 预备往返）、`login_prepare`（两项并行等待）和 `challenge_begin`（后续发码往返）；并行阶段不可简单相加。
 
 可分别设置 token 服务环境变量 `TOKEN_PREWARM=false`、执行 Worker 变量 `LOGIN_PREPARE_PARALLEL=false` 关闭优化；前者重建 token 容器，后者重新部署 executor。无需数据库迁移。空闲预热约增加 165 MiB VPS 内存，每次发码增加一次 DO 请求；实际耗时及 DO 活跃时长以部署后的测量为准。
 
@@ -55,6 +55,8 @@ pnpm --filter @heybox/web test:integration
 | `challenge_load` / `challenge_save` / `challenge_clear` | 短期登录状态的加载、保存和清理；多次操作累计 |
 | `token_http` | 执行端请求 VPS 令牌服务至读完响应 |
 | `token_service` / `token_queue` / `token_generate` | VPS 总处理时间、排队等待和独立进程生成令牌 |
+| `token_sdk_download` / `token_initialize` / `token_sdk_execute` / `token_wait` | SDK 下载与校验、依赖和 DOM 初始化、脚本执行、等待令牌 |
+| `token_dns` / `token_tcp` / `token_tls` / `token_upstream` | 取令牌连接的 DNS、TCP、TLS 各阶段及整个 SDK 请求；仅记录实际发生的阶段 |
 | `sms_upstream` | 构造签名、请求小黑盒发码并解析业务响应 |
 
 这些指标存在包含关系，不能全部相加：并行模式下 `executor` 包含 `login_prepare` 和 `challenge_begin`；`login_prepare` 包含重叠执行的 `challenge_prepare` 与 `token_http`，`challenge_begin` 包含 DO 的 `challenge_total` 及其中的 `sms_upstream`。串行回滚模式下 `challenge_total` 才包含 `token_http`。`token_http` 又包含 VPS 的处理时间。浏览器总耗时需结合 Network 的请求计时。旧版本服务不返回的指标会缺省，不会伪造为零。
@@ -185,7 +187,9 @@ runner 只监听主机回环地址；cloudflared 不开放额外入站端口。�
 
 登录的每个执行步骤记录一条结果日志：`runner_operation_completed` 或 `runner_operation_failed`。`outcome` 区分短信已发送（`sent`）、等待人机验证（`captcha`）、已登录（`authenticated`）和失败（`failed`）；`captcha` 不表示短信已发送。日志包含独立的 `operationId`、开始时间、耗时、是否携带人机验证凭据，以及 `phoneRef`、`deviceRef`、`egressIp` / `egressSource`。失败继续保留经过脱敏的上游原因和阶段。
 
-设备令牌 SDK 明确失败时立即结束该次初始化，不再统一等待 20 秒。`request_token` 阶段保留数值型 `sdkCode`、`httpStatus`、`upstreamCode` 和 `requestDurationMs`（仅在可取得时）；`sdkCode` 的 `-1`、`-2`、`-3` 分别表示 SDK 报告的连接错误、HTTP 错误和业务拒绝，`-4` 或未知错误归入 `sdk_error`。无响应仍由 `wait_token` 的 20 秒超时兜底，不自动重试；请求体、响应正文、令牌、Cookie 和 URL 查询参数不写入诊断。
+设备令牌 SDK 明确失败时立即结束该次初始化。SDK 下载限时 5 秒；取令牌的 DNS、TCP 和 TLS 建连合计限时 3 秒，完整请求限时 5 秒，SDK 等待令牌由 8 秒超时兜底。`request_token` 阶段保留数值型 `sdkCode`、`httpStatus`、`upstreamCode` 和 `requestDurationMs`（仅在可取得时），以及白名单内的 `networkCode` 和 `networkPhase`；`sdkCode` 的 `-1`、`-2`、`-3` 分别表示 SDK 报告的连接错误、HTTP 错误和业务拒绝，`-4` 或未知错误归入 `sdk_error`。
+
+VPS 进程池仅对令牌阶段的网络失败、HTTP 5xx 和等待令牌超时最多重试一次，第二次使用全新的子进程、指纹和 DOM；两次尝试共用原有 30 秒上限和取消信号。完整性校验失败、上游明确拒绝、脚本错误、取消和进程异常不自动重试。短信提交和验证码验证不自动重发。`device_token_attempt_failed` 与最终结果使用同一个 `requestId`，记录尝试序号、是否重试和经过筛选的诊断；分阶段耗时累计包含失败尝试，网络耗时包含在 `token_wait` 中，不能相加。请求体、响应正文、令牌、Cookie 和 URL 查询参数不写入诊断。
 
 手机号先规范为国际格式，再使用服务令牌做 HMAC；设备 ID 使用独立的 HMAC 前缀。日志不记录手机号、验证码、设备令牌、设备 ID、登录挑战或账号凭据原文。同一手机号的不同写法得到相同 `phoneRef`，同一登录设备的后续步骤得到相同 `deviceRef`；设备尚未生成时没有 `deviceRef`。更换服务令牌会改变这些关联标识，缺少有效令牌时不生成无密钥哈希。
 

@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { LoginTiming } from '@heybox/contracts';
+import { canRetryToken, parseTokenDiagnostic, TokenGenerationError, type TokenAttempt } from './token-diagnostic.ts';
 
 interface Child {
   process: ChildProcess;
@@ -7,6 +9,7 @@ interface Child {
   ready: boolean;
   result: Promise<string>;
   closed: Promise<void>;
+  timing: LoginTiming;
   start(): void;
   fail(): void;
 }
@@ -47,6 +50,7 @@ export class TokenPool {
     let failed = false;
     let sent = false;
     let outputBytes = 0;
+    let failure = new TokenGenerationError({ stage: 'process' });
     let resolve!: (value: string) => void;
     let reject!: (error: Error) => void;
     let closed!: () => void;
@@ -54,7 +58,7 @@ export class TokenPool {
     // An idle process has no caller; its failure schedules replacement below.
     void result.catch(() => {});
     const child: Child = {
-      process: processChild, used: false, ready: false, result, closed: new Promise<void>(r => closed = r),
+      process: processChild, used: false, ready: false, result, timing: new LoginTiming(), closed: new Promise<void>(r => closed = r),
       start: () => {
         if (sent || failed || !child.ready || !child.used) return;
         sent = true;
@@ -78,7 +82,14 @@ export class TokenPool {
       if (message.type === 'ready' && !child.ready) {
         child.ready = true; clearTimeout(startup); child.start();
       } else if (message.type === 'token' && sent && !value && 'token' in message
-          && typeof message.token === 'string' && /^B[A-Za-z0-9+/=_-]{88}$/.test(message.token)) value = message.token;
+          && typeof message.token === 'string' && /^B[A-Za-z0-9+/=_-]{88}$/.test(message.token)) {
+        value = message.token;
+        if ('timing' in message && typeof message.timing === 'string') child.timing.merge(message.timing);
+      } else if (message.type === 'error' && !value && 'diagnostic' in message) {
+        failure = new TokenGenerationError(parseTokenDiagnostic(message.diagnostic));
+        if ('timing' in message && typeof message.timing === 'string') child.timing.merge(message.timing);
+        child.fail();
+      }
       else child.fail();
     });
     processChild.once('close', code => {
@@ -86,7 +97,7 @@ export class TokenPool {
       this.children.delete(child);
       if (this.spare === child) this.spare = undefined;
       const succeeded = !failed && code === 0 && value;
-      if (succeeded) resolve(succeeded); else reject(new Error('设备令牌生成失败'));
+      if (succeeded) resolve(succeeded); else reject(failure);
       closed();
       // Replenish after exit to avoid extra startup CPU on the request's critical path.
       if (!this.stopping && !this.refill) this.refill = setTimeout(() => {
@@ -95,7 +106,21 @@ export class TokenPool {
     });
     return child;
   }
-  async generate(signal: AbortSignal): Promise<string> {
+  async generate(signal: AbortSignal, timing?: LoginTiming, onAttempt?: (value: TokenAttempt) => void): Promise<string> {
+    const deadline = performance.now() + this.options.requestMs;
+    for (let attempt = 1; ; attempt++) {
+      signal.throwIfAborted();
+      try { return await this.generateOnce(signal, deadline, timing); }
+      catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof TokenGenerationError)) throw error;
+        const retry = attempt === 1 && !this.stopping && performance.now() < deadline && canRetryToken(error.diagnostic);
+        onAttempt?.({ attempt, diagnostic: error.diagnostic, retry });
+        if (!retry) throw error;
+      }
+    }
+  }
+  private async generateOnce(signal: AbortSignal, deadline: number, timing?: LoginTiming): Promise<string> {
     signal.throwIfAborted();
     if (this.stopping) throw new Error('设备令牌服务正在停止');
     if (!this.spare && this.children.size >= this.options.maxChildren) throw new Error('设备令牌服务繁忙');
@@ -103,11 +128,13 @@ export class TokenPool {
     if (this.spare === child) this.spare = undefined;
     child.used = true;
     const abort = () => child.fail();
-    const timer = setTimeout(abort, this.options.requestMs);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; abort(); }, Math.max(0, deadline - performance.now()));
     signal.addEventListener('abort', abort, { once: true });
     child.start();
     try { return await child.result; }
-    finally { clearTimeout(timer); signal.removeEventListener('abort', abort); }
+    catch (error) { if (timedOut) throw new TokenGenerationError({ stage: 'deadline' }); throw error; }
+    finally { clearTimeout(timer); signal.removeEventListener('abort', abort); timing?.merge(child.timing.header()); }
   }
   async stop() {
     this.stopping = true; clearTimeout(this.refill); this.refill = undefined;
