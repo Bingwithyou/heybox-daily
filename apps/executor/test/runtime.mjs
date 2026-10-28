@@ -16,8 +16,9 @@ const directory = mkdtempSync(path.join(tmpdir(), 'heybox-executor-test-'));
 const source = `
 import worker from './src/worker.ts';
 import { LoginChallenge as OriginalChallenge, ActivityGate } from './src/objects.ts';
-import { Store } from '../web/src/server/store.ts';
-import { encryptCredential } from '../runner/src/crypto.ts';
+export { ActivityReader } from './src/activity-reader.ts';
+import { Store } from '@heybox/hosting/store';
+import { encryptCredential } from '@heybox/hosting/crypto';
 import { seal, unseal } from './src/sealed-state.ts';
 export { ActivityGate };
 export class LoginChallenge extends OriginalChallenge {
@@ -66,7 +67,8 @@ const options = convertV4MiniflareOptions({ name: 'executor-test', modules: true
   compatibilityDate: '2026-10-27', compatibilityFlags: ['nodejs_compat', 'enable_request_signal', 'request_signal_passthrough'], cf: false,
   bindings: { CREDENTIAL_KEY: key, RUNNER_SERVICE_TOKEN: token, TOKEN_SERVICE_URL: 'https://token.invalid', TOKEN_SERVICE_TOKEN: token, DAILY_ENABLED: 'true' },
   d1Databases: ['DB'],
-  durableObjects: { LOGIN_CHALLENGES: { className: 'LoginChallenge', useSQLite: true }, ACTIVITY_GATE: { className: 'ActivityGate', useSQLite: true } },
+  durableObjects: { LOGIN_CHALLENGES: { className: 'LoginChallenge', useSQLite: true }, ACTIVITY_GATE: { className: 'ActivityGate', useSQLite: true },
+    ACTIVITY_READERS: { className: 'ActivityReader', useSQLite: true } },
   queueProducers: { DAILY_QUEUE: 'heybox-daily-tasks' }, queueConsumers: { 'heybox-daily-tasks': { maxBatchSize: 1, maxBatchTimeout: 0 } },
   outboundService: async request => {
     upstreamRequests++;
@@ -149,9 +151,10 @@ try {
   await db.prepare('UPDATE rate_limits SET expires_at=0 WHERE key IN (?,?)').bind(quotaRules[0].key, quotaRules[2].key).run();
   assert.equal((await (await call('/test/quotas', quotaRules)).json()).rejected, null);
   const binding = 'a'.repeat(64);
+  let phoneSequence = 1;
   const begin = async () => {
     const timing = new LoginTiming();
-    const response = await call('/login/begin', { phone: '13800138000', binding, token: 'B' + 'z'.repeat(88) }, timing.id);
+    const response = await call('/login/begin', { phone: '13800138' + String(phoneSequence++).padStart(3, '0'), binding, token: 'B' + 'z'.repeat(88) }, timing.id);
     assert.equal(response.headers.get(loginTimingHeader), timing.id);
     timing.merge(response.headers.get('server-timing'));
     for (const stage of ['challenge_load', 'challenge_save', 'challenge_total', 'token_http', 'token_service', 'token_queue', 'token_generate', 'sms_upstream', 'challenge_prepare', 'login_prepare', 'challenge_begin'])
@@ -187,7 +190,11 @@ try {
   namespace = await runtime.getDurableObjectNamespace('LOGIN_CHALLENGES');
   stub = namespace.get(namespace.idFromName(first.challenge));
   const verified = await call('/login/verify', { challenge: first.challenge, code: '1234', binding });
-  assert.equal((await verified.json()).status, 'authenticated');
+  const authenticated = await verified.json();
+  assert.equal(authenticated.status, 'authenticated');
+  assert.deepEqual(await (await call('/login/verify', { challenge: first.challenge, code: '1234', binding })).json(), authenticated);
+  assert.equal((await call('/login/confirm', { challenge: first.challenge, binding: 'b'.repeat(64) })).status, 400);
+  assert.equal((await call('/login/confirm', { challenge: first.challenge, binding })).status, 200);
   assert.equal((await call('/login/verify', { challenge: first.challenge, code: '1234', binding })).status, 400);
   assert.equal((await (await stub.fetch('https://challenge/test/storage')).json()).values.length, 0);
   const challenges = await Promise.all(Array.from({ length: 8 }, begin));
@@ -214,23 +221,36 @@ try {
   assert.ok((await (await gateCall('acquire', { account: '5' })).json()).token);
   // Separate fixture account avoids the locks held above.
   const credential = await (await call('/test/seed', { account: '123' })).json();
-  await gateCall('release', { account: '2', token: leases[1].token });
+  const reads = gateNamespace.get(gateNamespace.idFromName('reads'));
+  const readGateCall = (action, body) => reads.fetch('https://gate/' + action, { method: 'POST', body: JSON.stringify(body) });
+  const readLeases = await Promise.all(Array.from({ length: 8 }, async (_, i) =>
+    (await readGateCall('acquire', { account: String(1000 + i) })).json()));
+  assert.ok(readLeases.every(x => x.token));
+  assert.equal((await (await readGateCall('acquire', { account: '2000' })).json()).reason, 'capacity');
+  for (const [i, lease] of readLeases.entries()) await readGateCall('release', { account: String(1000 + i), token: lease.token });
+  // All four participation slots remain occupied; they cannot block a list read.
   const activities = await call('/activities', { mode: 'list', credential });
   assert.equal((await activities.json()).activities.length, 1);
+  const requestsBeforeCachedRead = upstreamRequests;
+  assert.equal((await call('/activities', { mode: 'list', credential })).status, 200);
+  assert.equal(upstreamRequests, requestsBeforeCachedRead);
+  const readers = await runtime.getDurableObjectNamespace('ACTIVITY_READERS');
+  const reader = readers.get(readers.idFromName('123'));
+  await reader.fetch('https://reader/invalidate', { method: 'POST', body: JSON.stringify(credential) });
   holdActivity = true;
   // Match production's web -> executor service-binding cancellation, without relying on the dev HTTP proxy.
   const caller = await runtime.getWorker('activity-caller');
   const cancelled = caller.fetch('https://caller/activities', { method: 'POST',
     headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ mode: 'list', credential }) });
   await until(() => activityStarted, 'activity did not start');
-  assert.equal((await (await gateCall('acquire', { account: '123' })).json()).reason, 'account');
+  assert.equal((await (await readGateCall('acquire', { account: '123' })).json()).reason, 'account');
   assert.equal((await (await cancelled).json()).cancelled, true);
   let recoveredToken;
   await until(async () => {
-    recoveredToken = (await (await gateCall('acquire', { account: '123' })).json()).token;
+    recoveredToken = (await (await readGateCall('acquire', { account: '123' })).json()).token;
     return !!recoveredToken;
   }, 'cancelled request left its activity lease held', 2000);
-  await gateCall('release', { account: '123', token: recoveredToken });
+  await readGateCall('release', { account: '123', token: recoveredToken });
   holdActivity = false; releases.splice(0).forEach(release => release());
   assert.equal((await call('/activities', { mode: 'list', credential })).status, 200);
   assert.equal((await call('/tasks/wake')).status, 204);
@@ -250,7 +270,7 @@ try {
   runtime = new Miniflare({ ...options, workers: options.workers.map(worker => ({ ...worker,
     config: { ...worker.config, env: { ...worker.config.env, LOGIN_PREPARE_PARALLEL: { type: 'text', value: 'false' } } },
   })) });
-  const serial = await call('/login/begin', { phone: '13800138000', binding });
+  const serial = await call('/login/begin', { phone: '13800138999', binding });
   assert.equal(serial.status, 200);
   assert.equal((await serial.json()).status, 'sent');
   assert.match(serial.headers.get('server-timing'), /token_http;dur=/);

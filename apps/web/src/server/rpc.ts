@@ -1,7 +1,7 @@
 import { os, ORPCError } from "@orpc/server";
 import { z } from "zod";
 import { createAuth } from "./auth.ts";
-import { Store } from "./store.ts";
+import { Store } from "@heybox/hosting/store";
 import type { Env } from "./env.ts";
 import { notifyRunnerInBackground } from "./notify.ts";
 import { activityConsentSchema } from "@heybox/contracts";

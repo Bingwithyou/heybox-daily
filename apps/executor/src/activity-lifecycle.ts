@@ -11,8 +11,9 @@ export function withActivityLease<T>(gate: Pick<Fetcher, 'fetch'>, account: stri
     if (!acquired.ok) throw new ActivityFailure('activity_upstream');
     const { token, reason } = await acquired.json() as { token: string | null; reason?: 'account' | 'capacity' };
     if (!token) {
-      trace.log('executor_activity_failed', { code: 'activity_busy', busyScope: reason });
-      throw new ActivityFailure('activity_busy');
+      const code = reason === 'capacity' ? 'activity_capacity' : 'activity_busy';
+      trace.log('executor_activity_failed', { code, busyScope: reason });
+      throw new ActivityFailure(code);
     }
     trace.log('executor_activity_acquired');
     try { signal.throwIfAborted(); return await execute(); }

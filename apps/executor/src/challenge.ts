@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { Config } from 'heybox-daily/types';
 import { normalizePhone } from 'heybox-daily/login-core';
-import { captchaAppIdSchema, captchaProofSchema, codeSchema, LoginFailure, type LoginTiming, type CaptchaProof, type LoginProgress } from '@heybox/contracts';
-import type { LoginStep } from '../../runner/src/challenges.ts';
+import { captchaAppIdSchema, captchaProofSchema, codeSchema, LoginFailure, type LoginTiming, type CaptchaProof, type LoginProgress, type Credential } from '@heybox/contracts';
+import { encryptCredential } from '@heybox/hosting/crypto';
+import type { LoginStep } from '@heybox/hosting/login';
 import { seal, unseal } from './sealed-state.ts';
 
 export interface ChallengeStorage {
@@ -18,10 +19,11 @@ export interface LoginOperations {
   send(config: Config, phone: string, proof: CaptchaProof, timing?: LoginTiming): Promise<LoginStep>;
   verify(config: Config, phone: string, code: string, proof?: CaptchaProof, timing?: LoginTiming): Promise<LoginStep>;
 }
-type Phase = { status: 'initializing' | 'sent' } | { status: 'captcha'; operation: 'send' | 'verify'; appId: string; code?: string };
+type Phase = { status: 'initializing' | 'sent' } | { status: 'captcha'; operation: 'send' | 'verify'; appId: string; code?: string }
+  | { status: 'authenticated'; credential: Credential };
 type State = { phone: string; binding: string; expiresAt: number; config?: Config; phase: Phase;
   attempts: number; captchaAttempts: number; usedTickets: string[]; busy: boolean };
-type Result = LoginProgress | { status: 'authenticated'; config: Config };
+type Result = LoginProgress | { status: 'authenticated'; credential: Credential; recovery: { challenge: string; expiresAt: number } };
 
 export class PersistentChallenge {
   private state?: State;
@@ -52,8 +54,7 @@ export class PersistentChallenge {
     if (!this.state || this.state.expiresAt <= this.now()) await this.clear();
     else await this.storage.setAlarm(this.state.expiresAt);
   }
-  private async save(timing?: LoginTiming) {
-    const state = this.state;
+  private async save(timing?: LoginTiming, state = this.state) {
     if (!state) return;
     const started = performance.now();
     try {
@@ -76,12 +77,28 @@ export class PersistentChallenge {
     return value.phase.status === 'captcha' ? { ...common, status: 'captcha', appId: value.phase.appId }
       : { ...common, status: 'sent', retryAfter: 60 };
   }
+  private authenticated(value: State): Result {
+    if (value.phase.status !== 'authenticated') throw new Error('登录尚未完成');
+    return { status: 'authenticated', credential: value.phase.credential,
+      recovery: { challenge: this.id, expiresAt: value.expiresAt } };
+  }
+  async confirm(binding: string) {
+    if (!this.state) return;
+    const value = this.get(binding);
+    if (value.phase.status !== 'authenticated') throw new Error('登录尚未完成');
+    await this.clear();
+  }
   private async accept(value: State, result: LoginStep, operation: 'send' | 'verify', code?: string, timing?: LoginTiming): Promise<Result> {
     if (this.state !== value || value.expiresAt <= this.now()) {
       await this.clear(timing); throw new Error('登录挑战已过期，请重新获取验证码');
     }
     if (result.status === 'authenticated' && operation === 'verify') {
-      await this.clear(timing); return { status: 'authenticated', config: result.config };
+      value.phase = { status: 'authenticated', credential: encryptCredential(result.config, this.key) };
+      value.config = undefined;
+      // The cached result uses one credential version and is durable before any caller can replay it.
+      await this.save(timing, { ...value, busy: false });
+      value.busy = false;
+      return this.authenticated(value);
     }
     if (result.status === 'captcha') {
       if (value.captchaAttempts >= 3) { await this.clear(timing); throw new Error('人机验证次数已用完，请重新开始登录'); }
@@ -105,6 +122,7 @@ export class PersistentChallenge {
   }
   async verify(code: string, binding: string, timing?: LoginTiming): Promise<Result> {
     const value = this.get(binding);
+    if (value.phase.status === 'authenticated') return this.authenticated(value);
     if (value.phase.status !== 'sent' || !value.config) throw new Error('请先完成人机验证');
     codeSchema.parse(code);
     value.busy = true; value.attempts++;
@@ -118,6 +136,7 @@ export class PersistentChallenge {
   }
   async completeCaptcha(input: CaptchaProof, binding: string, timing?: LoginTiming): Promise<Result> {
     const value = this.get(binding);
+    if (value.phase.status === 'authenticated') return this.authenticated(value);
     if (value.phase.status !== 'captcha' || !value.config) throw new Error('人机验证状态已变化，请刷新页面');
     const proof = captchaProofSchema.parse(input);
     const hash = createHash('sha256').update(proof.ticket).digest('hex');

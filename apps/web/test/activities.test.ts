@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { activityRequest } from "../src/server/activities.ts";
 import type { Env } from "../src/server/env.ts";
-import type { Store } from "../src/server/store.ts";
+import type { Store } from "@heybox/hosting/store";
 
 const credential = {
   account: "123",

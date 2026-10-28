@@ -1,12 +1,7 @@
+import { runnerRequest } from "../src/server/security.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  boundedBody,
-  runnerRequest,
-  privateKey,
-  sameOrigin,
-  serviceAuthorized,
-} from "../src/server/security.ts";
+import { boundedBody, privateKey, sameOrigin, serviceAuthorized } from "@heybox/hosting/security";
 import type { Env } from "../src/server/env.ts";
 import { authRequest } from "../src/lib/client.ts";
 import { LoginFailure, LoginTiming, loginTimingHeader } from "@heybox/contracts";
@@ -218,6 +213,32 @@ test("a rejected SMS response still synchronizes its authoritative cooldown", as
     LoginFailure,
   );
   assert.deepEqual(received, cooldown);
+});
+
+test("actual SMS cooldown survives executor and browser transports as HTTP 429 with a deadline", async (t) => {
+  const retryAt = Date.now() + 60_000;
+  const body = {
+    code: "sms_cooldown",
+    retryAt,
+    smsCooldown: { serverTime: Date.now(), limits: [{ rule: "sms:phone:minute", retryAt }] },
+  };
+  const env = {
+    EXECUTOR_ENABLED: "true",
+    RUNNER_SERVICE_TOKEN: "fixture",
+    EXECUTOR: { fetch: async () => Response.json(body, { status: 429 }) },
+  } as unknown as Env;
+  const expected = (error: unknown) =>
+    error instanceof LoginFailure && error.code === "sms_cooldown" && error.retryAt === retryAt;
+  await assert.rejects(runnerRequest(env, "/login/captcha", {}), expected);
+  t.mock.method(globalThis, "fetch", async () => Response.json(body, { status: 429 }));
+  let received: SmsCooldown | undefined;
+  await assert.rejects(
+    authRequest("heybox/complete-captcha", {}, (value) => {
+      received = value;
+    }),
+    expected,
+  );
+  assert.deepEqual(received, body.smsCooldown);
 });
 
 test("the generic auth limiter has a Chinese message and honors its remaining retry time", async (t) => {

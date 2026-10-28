@@ -3,7 +3,7 @@ import { ActivityFailure, LoginFailure, taskIds, type ActivityView, type Outcome
 import type { Config } from 'heybox-daily/types';
 import { ChallengeStore } from './challenges.ts';
 import { ActivityService } from './activities.ts';
-import { decryptCredential } from './crypto.ts';
+import { decryptCredential } from '@heybox/hosting/crypto';
 import { createRunnerServer } from './server.ts';
 
 const accounts = new Map([['+8613900000009', '900000009'], ['+8613900000008', '900000008']]);

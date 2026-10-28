@@ -22,9 +22,11 @@
   "durable_objects": {
     "bindings": [
       { "name": "LOGIN_CHALLENGES", "class_name": "LoginChallenge" },
-      { "name": "ACTIVITY_GATE", "class_name": "ActivityGate" }
+      { "name": "ACTIVITY_GATE", "class_name": "ActivityGate" },
+      { "name": "ACTIVITY_READERS", "class_name": "ActivityReader" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LoginChallenge", "ActivityGate"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LoginChallenge", "ActivityGate"] },
+    { "tag": "v2", "new_sqlite_classes": ["ActivityReader"] }],
   "triggers": { "crons": ["* * * * *"] }
 }

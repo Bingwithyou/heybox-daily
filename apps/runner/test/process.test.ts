@@ -5,7 +5,7 @@ import { createRunnerServer } from '../src/server.ts';
 import { ChallengeStore } from '../src/challenges.ts';
 import { failureCategory } from '../src/worker.ts';
 import { HeyboxApiError } from 'heybox-daily/client';
-import { encryptCredential } from '../src/crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 import { beijingDate } from '@heybox/contracts';
 
 test('failure diagnostics identify the stage without exposing exception text or credentials', () => {

@@ -4,6 +4,8 @@
 
 `apps/web` 使用 React 19、TanStack Start、Tailwind CSS 4、shadcn/ui base-nova、oRPC、Better Auth 和 Drizzle，运行在 Cloudflare Workers，数据保存在 D1。`apps/executor` 在独立 Worker 中执行每日任务、活动和登录挑战，网站通过 Service Binding 调用；VPS 只运行设备令牌服务及 cloudflared。工程使用 pnpm workspace 和 Vite+，原 runner 保留为回滚实现。
 
+`packages/hosting` 提供三个应用实际共用的 Store、通用请求安全检查、凭据加解密和执行检查；`packages/contracts` 保存数据合同。Web 的会话和执行端请求适配保留在 Web，Executor 不再导入 Web 或 Runner 的生产源码。
+
 ## 本地检查
 
 需要 Node.js 24 和 pnpm 12.15.0。在仓库根目录运行：
@@ -107,7 +109,7 @@ pnpm --filter @heybox/web dev
 | Worker `heybox-executor` | 内部执行服务，不开放 workers.dev 或公开路由 |
 | D1 `heybox-daily` | 网站会话、加密登录态、任务记录 |
 | Queues `heybox-daily-tasks` / `heybox-daily-dead` | 每日任务投递及死信处理 |
-| Durable Objects `LoginChallenge` / `ActivityGate` | 加密的短期登录挑战、活动限额与账号互斥 |
+| Durable Objects `LoginChallenge` / `ActivityGate` / `ActivityReader` | 加密的短期登录挑战、活动限额与账号互斥、按账号合并与缓存活动读取 |
 | `heybox.cansiny.top` | 网站域名 |
 | Tunnel `heybox-daily-runner` | Worker 到 VPS 的加密连接 |
 | `heybox-token.cansiny.top` | 仅提供设备令牌及健康检查，要求独立服务令牌 |
@@ -144,13 +146,21 @@ pnpm --filter @heybox/web build
 pnpm --filter @heybox/web run deploy
 ```
 
-登录挑战各自使用一个 Durable Object，手机号、临时配置、必要时保存的验证码及票据哈希在加密后暂存，5 分钟过期并由 alarm 清理。不同挑战的验证码校验互不占用旧 runner 的全局 4 个名额；同一挑战不能并发提交。持久化记录表明上游操作被中断时，挑战失效并要求用户重新开始，不自动重发短信。VPS SDK 仍为 4 并发，另有最多 16 个、等待最长 15 秒的短队列，每个 SDK 子进程最长 30 秒；服务不接收手机号、验证码或账号凭据。
+登录挑战各自使用一个 Durable Object，手机号、临时配置、必要时保存的验证码及票据哈希在加密后暂存，5 分钟过期并由 alarm 清理。不同挑战的验证码校验互不占用旧 runner 的全局 4 个名额；同一挑战不能并发提交。已持久化的成功结果保留至原挑战到期，重试复用同一凭据版本和网站会话，不再次校验短信或重置任务；浏览器收到会话后调用确认接口提前清理。尚未取得成功结果的上游操作若被中断，仍要求重新开始，不自动重发短信。
 
-活动仍只由用户操作触发，保留明确的关注确认。全局最多 4 个活动请求，同一账号不能同时执行；90 秒操作截止时间短于 95 秒互斥租约。参与前重新读取上游状态，中断后再次操作也先核实已参与及关注状态。
+实际发码前还会按手机号的 HMAC 原子占用，覆盖直接发码和 CAPTCHA 后发码。占用最长 180 秒，覆盖最长 120 秒的单次登录操作；成功或结果不明确后冷却 60 秒，明确返回 CAPTCHA 则释放占用。原有手机号和 IP 请求限额保持不变，验证短信不扣发码名额。`sms_sends` 和 `login_receipts` 的过期记录由每日清理删除，不保存明文手机号、验证码或凭据。
+
+VPS SDK 仍为 4 并发，另有最多 16 个、等待最长 15 秒的短队列，每个 SDK 子进程最长 30 秒；服务不接收手机号、验证码或账号凭据。
+
+活动仍只由用户操作触发，保留明确的关注确认。全局最多 4 个参与请求、8 个列表读取，各自使用独立容量。相同账号和凭据版本的列表合并读取并在内存缓存 15 秒，缓存命中仍检查凭据有效性；取消最后一个等待者才会取消共享上游读取。参与前后使列表缓存失效，参与前已开始的旧读取不会覆盖新状态。同一账号的参与操作保持互斥；90 秒操作截止时间短于 95 秒互斥租约。参与前重新读取上游状态，中断后再次操作也先核实已参与及关注状态。
+
+执行租约过期而结果未保存时，后续重试仍可确认任务是否完成，但收益显示为“收益未确认”，不能把重试时的零增量或跳过状态当成全天结果。已保存的明确执行证据继续保留。
+
+升级这些恢复行为时，先在获授权后应用 `0004_login_recovery.sql`，再部署带 `ActivityReader` binding 和 v2 DO migration 的 Executor，最后构建、部署 Web。旧代码兼容新增表；回滚代码时保留表和既有数据，不回退数据库快照。
 
 执行日志仅记录操作类型、任务 ID、有限的结果分类和耗时；不记录手机号、验证码、票据、设备令牌或上游响应原文。`executor_task_finished` 的 `accepted=true` 表示 D1 接受该版本与租约的结果；请求返回 200 本身不代表任务完成。CPU 以 Cloudflare 观测值为准，不能把包含等待时间的 `durationMs` 当作 CPU 时间。
 
-回滚顺序：先关闭 `DAILY_ENABLED`，等待在途任务结束；恢复受控备份中的旧 runner 与密钥配置；将网站每日路由改回 `legacy`。新登录改回旧 runner 后，仍需给已创建的 Worker 挑战保留 5 分钟完成窗口，期间保留 Service Binding。确认新挑战排空后再停执行 Worker。新增 D1 字段和索引可保留，不能通过恢复旧数据库快照回退新产生的用户数据。
+回滚顺序：先按下文暂停两个队列投递，再关闭 `DAILY_ENABLED`，等待在途任务结束；恢复受控备份中的旧 runner 与密钥配置；将网站每日路由改回 `legacy`。新登录改回旧 runner 后，仍需给已创建的 Worker 挑战保留 5 分钟完成窗口，期间保留 Service Binding。确认新挑战排空后再停执行 Worker。新增 D1 字段、表和索引可保留，不能通过恢复旧数据库快照回退新产生的用户数据。
 
 ### 旧 runner 部署（仅回滚及兼容维护）
 
@@ -308,10 +318,32 @@ node scripts/deploy-staging.mjs
 # 导出到不纳入 Git 的目录
 pnpm --filter @heybox/web exec wrangler d1 export heybox-daily --remote --output ../../private/heybox-backup.sql
 
-# 停止执行端及连接
+```
+
+每日任务在 Cloudflare Executor 中运行。停止 VPS 令牌服务、停止网站 Cron 或移除网站域名，都不会停止已经投递的队列任务。
+
+维护每日任务时，先暂停两个队列的投递；以下命令会修改生产状态，需在维护获授权后执行：
+
+```bash
+pnpm --filter @heybox/executor exec wrangler queues pause-delivery heybox-daily-tasks
+pnpm --filter @heybox/executor exec wrangler queues pause-delivery heybox-daily-dead
+```
+
+原生暂停不会消耗消息重试次数，但不会取消已在执行的任务。等待在途执行结束，再进行执行端升级或回滚。需要停止新任务投递时，同时将 Executor 的 `DAILY_ENABLED` 设为 `false`；不要仅靠这个开关代替队列暂停。暂停期间消息仍受队列保留期限限制，不能将暂停当成长期备份，也不要使用 `purge` 清空生产队列。
+
+需要完全停用时，移除网站 Worker 和 Executor Worker 各自的 Cron Trigger，并按需要移除网站域名路由。VPS 停止命令如下，它只停止设备令牌服务和 Tunnel，会影响新登录：
+
+```bash
 docker compose -p heybox-hosted -f compose.hosted.yaml --profile tunnel stop
 ```
 
-停用网站时同时移除 Worker 的 Cron Trigger；需要下线时再移除网站域名路由。不会自动删除 D1。恢复旧版本前确认它兼容当前数据库；不要自动回滚或删除用户数据。
+恢复时先确认所需服务和数据库兼容，恢复 `DAILY_ENABLED=true` 及原有 Cron，再恢复投递：
+
+```bash
+pnpm --filter @heybox/executor exec wrangler queues resume-delivery heybox-daily-tasks
+pnpm --filter @heybox/executor exec wrangler queues resume-delivery heybox-daily-dead
+```
+
+当天待办恢复后可继续执行；跨日旧任务按现有规则停止，由当天的新任务接续。上述停止操作不会删除 D1。恢复旧版本前确认它兼容当前数据库；不要自动回滚或删除用户数据。队列暂停和消息过期行为见 [Cloudflare 官方说明](https://developers.cloudflare.com/queues/configuration/pause-purge/)。
 
 参考：[TanStack Start 的 Workers 部署](https://tanstack.com/start/latest/docs/framework/react/guide/hosting)、[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/)、[Wrangler Tunnel 命令](https://developers.cloudflare.com/workers/wrangler/commands/tunnel/)。

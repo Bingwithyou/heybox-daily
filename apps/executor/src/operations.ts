@@ -4,12 +4,13 @@ import { ActivityError, listActivities, participateActivity } from 'heybox-daily
 import { createLoginConfig, sendLoginCode, verifyLoginCode } from 'heybox-daily/login-core';
 import type { Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
 import { taskIds, ActivityFailure, LoginFailure, LoginTiming, loginTimingHeader, type Job, type Outcome, type TaskSnapshot, type ActivityRequest, type ActivityResult } from '@heybox/contracts';
-import { decryptCredential } from '../../runner/src/crypto.ts';
-import { createDailyCheckpoint } from '../../runner/src/checkpoint.ts';
-import type { Store } from '../../web/src/server/store.ts';
+import { decryptCredential } from '@heybox/hosting/crypto';
+import { createDailyCheckpoint } from '@heybox/hosting/checkpoint';
+import { Store } from '@heybox/hosting/store';
 import { deadline } from './deadline.ts';
 import type { LoginOperations } from './challenge.ts';
 import type { Env } from './env.ts';
+import { sendWithCooldown } from './sms-send.ts';
 import { ActivityTrace } from './activity-trace.ts';
 
 export function failureCategory(error: unknown) {
@@ -116,7 +117,7 @@ export async function requestDeviceToken(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'T
   });
 }
 
-export function loginOperations(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERVICE_TOKEN'>, fetchImpl: typeof fetch = fetch): LoginOperations {
+export function loginOperations(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERVICE_TOKEN' | 'CREDENTIAL_KEY' | 'DB'>, fetchImpl: typeof fetch = fetch): LoginOperations {
   const operation = async <T>(action: (request: typeof fetch) => Promise<T>): Promise<T> => {
     const scope = deadline(120_000, fetchImpl);
     try { return await action(scope.fetch); }
@@ -139,12 +140,15 @@ export function loginOperations(env: Pick<Env, 'TOKEN_SERVICE_URL' | 'TOKEN_SERV
       throw error;
     }
   };
+  const send = (request: typeof fetch, config: Parameters<LoginOperations['send']>[0], phone: string,
+    timing: LoginTiming, proof?: Parameters<LoginOperations['send']>[2]) =>
+    sendWithCooldown(new Store(env.DB), env.CREDENTIAL_KEY, phone, () => step('send', request, config, phone, timing, proof));
   return {
     begin: (phone, timing = new LoginTiming(), preparedToken) => operation(async request => {
       const token = preparedToken ?? await requestDeviceToken(env, timing, request);
-      return step('send', request, createLoginConfig(token), phone, timing);
+      return send(request, createLoginConfig(token), phone, timing);
     }),
-    send: (config, phone, proof, timing = new LoginTiming()) => operation(request => step('send', request, config, phone, timing, proof)),
+    send: (config, phone, proof, timing = new LoginTiming()) => operation(request => send(request, config, phone, timing, proof)),
     verify: (config, phone, code, proof, timing = new LoginTiming()) => operation(request => step('verify', request, config, phone, timing, proof, code)),
   };
 }

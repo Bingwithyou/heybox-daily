@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { createPreviewRunner, previewOutcome, previewWebsite } from '../src/preview.ts';
-import { encryptCredential } from '../src/crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 
 const token = 'staging-test-service-token-32-characters';
 const key = randomBytes(32).toString('base64');

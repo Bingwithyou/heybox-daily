@@ -61,12 +61,20 @@ export class Store {
       ).first(),
     );
   }
-  async enroll(credential: Credential) {
+  async enroll(credential: Credential, receipt?: { challenge: string; expiresAt: number }) {
     const id = `heybox:${credential.account}`;
     const now = this.now();
+    if (receipt && receipt.expiresAt <= now) throw new Error("登录结果已过期");
+    const owner = crypto.randomUUID();
+    const gate = receipt ? " AND EXISTS(SELECT 1 FROM login_receipts WHERE challenge=? AND owner=?)" : "";
+    const gateValues = receipt ? [receipt.challenge, owner] : [];
     await this.db.batch([
+      ...(receipt ? [this.sql(
+        "INSERT OR IGNORE INTO login_receipts(challenge,account,version,owner,expires_at) VALUES(?,?,?,?,?)",
+        receipt.challenge, credential.account, credential.version, owner, receipt.expiresAt,
+      )] : []),
       this.sql(
-        `INSERT INTO user(id,name,email,image,created_at,updated_at) VALUES(?,?,?,?,?,?)
+        `INSERT INTO user(id,name,email,image,created_at,updated_at) SELECT ?,?,?,?,?,? WHERE 1=1${gate}
         ON CONFLICT(id) DO UPDATE SET name=COALESCE(?,user.name),image=COALESCE(?,user.image),updated_at=excluded.updated_at`,
         id,
         credential.profile?.nickname || `盒友 ${credential.account}`,
@@ -74,33 +82,46 @@ export class Store {
         credential.profile?.avatar || null,
         now,
         now,
+        ...gateValues,
         credential.profile?.nickname || null,
         credential.profile?.avatar || null,
       ),
       this.sql(
-        `INSERT INTO hosting(user_id,heybox_id,ciphertext,version,enabled,credential_state,updated_at) VALUES(?,?,?,?,1,'valid',?)
+        `INSERT INTO hosting(user_id,heybox_id,ciphertext,version,enabled,credential_state,updated_at) SELECT ?,?,?,?,1,'valid',? WHERE 1=1${gate}
         ON CONFLICT(user_id) DO UPDATE SET ciphertext=excluded.ciphertext,version=excluded.version,enabled=1,credential_state='valid',updated_at=excluded.updated_at`,
         id,
         credential.account,
         credential.ciphertext,
         credential.version,
         now,
+        ...gateValues,
       ),
       this.sql(
-        `UPDATE jobs SET status='cancelled',updated_at=? WHERE user_id=? AND status IN ('queued','running')`,
+        `UPDATE jobs SET status='cancelled',updated_at=? WHERE user_id=? AND status IN ('queued','running')${gate}`,
         now,
         id,
+        ...gateValues,
       ),
+      ...this.enqueueStatements(id, true, now, gate, gateValues),
     ]);
-    await this.enqueue(id, true);
+    if (receipt) {
+      const current = await this.sql(
+        `SELECT h.version FROM hosting h JOIN login_receipts r ON h.heybox_id=r.account
+         WHERE r.challenge=? AND r.version=? AND r.expires_at>?`,
+        receipt.challenge, credential.version, now,
+      ).first<{ version: string }>();
+      if (current?.version !== credential.version) throw new Error("登录结果已失效或已被新的登录替代");
+    }
     return id;
   }
   async enqueue(userId: string, retry = false) {
-    const now = this.now();
+    await this.db.batch(this.enqueueStatements(userId, retry, this.now()));
+  }
+  private enqueueStatements(userId: string, retry: boolean, now: number, gate = "", gateValues: unknown[] = []) {
     const date = beijingDate(now);
     const insert = this.sql(
       `INSERT INTO jobs(id,user_id,date,status,available_at,created_at,updated_at)
-      SELECT ?,user_id,?,'queued',?,?,? FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid'
+      SELECT ?,user_id,?,'queued',?,?,? FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid'${gate}
       ON CONFLICT(user_id,date) DO NOTHING`,
       crypto.randomUUID(),
       date,
@@ -108,6 +129,7 @@ export class Store {
       now,
       now,
       userId,
+      ...gateValues,
     );
     const statements = [insert];
     if (retry)
@@ -116,15 +138,35 @@ export class Store {
           `UPDATE jobs SET status='queued',attempts=0,available_at=MAX(?,COALESCE(lease_until,0)),updated_at=?,
           queue_token=NULL,queue_published=0,dispatch_until=0
       WHERE user_id=? AND date=? AND status IN ('failed','cancelled','auth_expired')
-      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid')`,
+      AND EXISTS(SELECT 1 FROM hosting WHERE user_id=? AND enabled=1 AND credential_state='valid')${gate}`,
           now,
           now,
           userId,
           date,
           userId,
+          ...gateValues,
         ),
       );
-    await this.db.batch(statements);
+    return statements;
+  }
+  async acquireSmsSend(key: string): Promise<{ token?: string; retryAt: number }> {
+    const now = this.now();
+    const token = crypto.randomUUID();
+    const acquired = await this.sql(
+      `INSERT INTO sms_sends(key,token,expires_at) VALUES(?,?,?)
+       ON CONFLICT(key) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at
+       WHERE sms_sends.expires_at<=? RETURNING token,expires_at AS retryAt`,
+      key, token, now + 180_000, now,
+    ).first<{ token: string; retryAt: number }>();
+    if (acquired) return acquired;
+    const held = await this.sql("SELECT expires_at AS retryAt FROM sms_sends WHERE key=?", key)
+      .first<{ retryAt: number }>();
+    return { retryAt: held?.retryAt ?? now };
+  }
+  async finishSmsSend(key: string, token: string, possiblySent: boolean) {
+    await (possiblySent
+      ? this.sql("UPDATE sms_sends SET expires_at=? WHERE key=? AND token=?", this.now() + 60_000, key, token)
+      : this.sql("DELETE FROM sms_sends WHERE key=? AND token=?", key, token)).run();
   }
   async schedule() {
     const now = this.now();
@@ -149,6 +191,8 @@ export class Store {
     const now = this.now();
     await this.db.batch([
       this.sql("DELETE FROM rate_limits WHERE expires_at<?", now),
+      this.sql("DELETE FROM sms_sends WHERE expires_at<?", now),
+      this.sql("DELETE FROM login_receipts WHERE expires_at<?", now),
       this.sql("DELETE FROM session WHERE expires_at<?", now),
       this.sql("DELETE FROM jobs WHERE updated_at<?", now - 30 * 86400_000),
     ]);
@@ -201,7 +245,8 @@ export class Store {
       this.sql(
         `UPDATE jobs SET status=CASE WHEN attempts<3 THEN 'queued' ELSE 'failed' END,lease=NULL,lease_until=NULL,updated_at=?,
         queue_token=NULL,queue_published=0,dispatch_until=0,
-        result=CASE WHEN attempts>=3 THEN '{"status":"failed","reason":"timeout"}' ELSE result END
+        result=json_set(json_remove(COALESCE(result,'{"status":"failed","reason":"timeout"}'),
+          '$.expDelta','$.coinDelta','$.batteryDelta'),'$.uncertain',json('true'))
         WHERE status='running' AND lease_until<?`,
         now,
         now,
@@ -266,11 +311,16 @@ export class Store {
     return credential ? { id: row.id, date: row.date, lease, credential } : null;
   }
   async deadLetter(message: QueueMessage) {
+    // Transport retries are not business attempts, including a failed handback during a pause.
+    // D1 still bounds actual execution to three attempts; retry delivery with a short backoff.
+    await this.deferQueued(message, 60_000);
+  }
+  async deferQueued(message: QueueMessage, delayMs = 0) {
+    // The D1 job remains the durable source of work; an old delivery cannot reset a new one.
     await this.sql(
-      `UPDATE jobs SET status='failed',result='{"status":"failed","reason":"timeout"}',updated_at=?,
-      queue_token=NULL,queue_published=0,dispatch_until=0
-      WHERE id=? AND queue_token=? AND status='queued'`,
-      this.now(),
+      `UPDATE jobs SET queue_token=NULL,queue_published=0,dispatch_until=?
+       WHERE id=? AND queue_token=? AND status='queued'`,
+      this.now() + delayMs,
       message.id,
       message.token,
     ).run();
@@ -352,6 +402,7 @@ export class Store {
       version,
     ).first<{ result: string | null }>();
     const old = previous?.result ? outcomeSchema.parse(JSON.parse(previous.result)) : null;
+    const uncertain = outcome.uncertain || old?.uncertain || undefined;
     const execution =
       outcome.execution || old?.execution ? { ...old?.execution, ...outcome.execution } : undefined;
     if (execution) {
@@ -359,7 +410,7 @@ export class Store {
         if (old?.execution?.[task] === "executed" || outcome.execution?.[task] === "executed")
           execution[task] = "executed";
         else if (
-          (old && old.execution?.[task] !== "skipped") ||
+          uncertain || (old && old.execution?.[task] !== "skipped") ||
           outcome.execution?.[task] !== "skipped"
         )
           delete execution[task];
@@ -367,17 +418,18 @@ export class Store {
     }
     const result = {
       ...outcome,
+      uncertain,
       execution,
       batteryDelta:
-        outcome.batteryDelta === undefined || (old !== null && old.batteryDelta === undefined)
+        uncertain || outcome.batteryDelta === undefined || (old !== null && old.batteryDelta === undefined)
           ? undefined
           : outcome.batteryDelta + (old?.batteryDelta || 0),
       expDelta:
-        outcome.expDelta === undefined || (old !== null && old.expDelta === undefined)
+        uncertain || outcome.expDelta === undefined || (old !== null && old.expDelta === undefined)
           ? undefined
           : outcome.expDelta + (old?.expDelta || 0),
       coinDelta:
-        outcome.coinDelta === undefined && old?.coinDelta === undefined
+        uncertain || (outcome.coinDelta === undefined && old?.coinDelta === undefined)
           ? undefined
           : (outcome.coinDelta || 0) + (old?.coinDelta || 0),
     };

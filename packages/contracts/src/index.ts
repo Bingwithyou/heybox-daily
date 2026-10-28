@@ -45,6 +45,7 @@ const activityFailureMessages = {
   activity_invalid: '活动信息暂时不可用，请稍后刷新',
   activity_auth: '小黑盒登录已失效或账号已变化，请重新登录',
   activity_busy: '当前账号的活动操作正在执行，请稍后刷新',
+  activity_capacity: '活动服务当前请求较多，请稍后重试',
   activity_upstream: '小黑盒暂时无法处理此活动，请稍后刷新状态',
 };
 export const activityFailureSchema = z.object({ code: z.enum(Object.keys(activityFailureMessages) as [keyof typeof activityFailureMessages, ...Array<keyof typeof activityFailureMessages>]) });
@@ -58,6 +59,7 @@ export type Job = z.infer<typeof jobSchema>;
 export const queueMessageSchema = z.object({ id: idSchema, token: idSchema });
 export type QueueMessage = z.infer<typeof queueMessageSchema>;
 export const outcomeSchema = z.object({ status: z.enum(['completed', 'failed', 'auth_expired', 'cancelled']),
+  uncertain: z.boolean().optional(),
   snapshot: snapshotSchema.optional(), expDelta: z.number().optional(), coinDelta: z.number().optional(),
   batteryDelta: z.number().int().optional(), execution: taskExecutionSchema.optional(),
   profile: profileSchema.optional(),
@@ -72,6 +74,7 @@ export const captchaProofSchema = z.object({
 });
 export type CaptchaProof = z.infer<typeof captchaProofSchema>;
 export const completeCaptchaSchema = captchaProofSchema.extend({ challenge: idSchema, binding: bindingSchema });
+export const confirmLoginSchema = z.object({ challenge: idSchema, binding: bindingSchema });
 export const finishSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema, result: outcomeSchema });
 export const heartbeatSchema = z.object({ id: idSchema, lease: idSchema, version: idSchema });
 export const sentResultSchema = z.object({ status: z.literal('sent'), challenge: idSchema, expiresAt: z.number(), retryAfter: z.number(), message: z.string().max(120).optional() });
@@ -79,16 +82,19 @@ export const captchaResultSchema = z.object({ status: z.literal('captcha'), chal
 export const beginResultSchema = z.discriminatedUnion('status', [sentResultSchema, captchaResultSchema]);
 export type LoginProgress = z.infer<typeof beginResultSchema>;
 export const runnerLoginResultSchema = z.discriminatedUnion('status', [sentResultSchema, captchaResultSchema,
-  z.object({ status: z.literal('authenticated'), credential: credentialSchema })]);
+  z.object({ status: z.literal('authenticated'), credential: credentialSchema,
+    recovery: z.object({ challenge: idSchema, expiresAt: z.number() }).optional() })]);
 const loginFailureMessages = {
   captcha_required: '请先完成人机验证，再继续登录',
   upstream_rate_limit: '小黑盒验证码请求过于频繁，请稍后再试',
+  sms_cooldown: '该手机号正在发送验证码或仍在冷却，请稍后再试',
 };
-export const loginFailureSchema = z.object({ code: z.enum(['captcha_required', 'upstream_rate_limit']) });
+export const loginFailureSchema = z.object({ code: z.enum(['captcha_required', 'upstream_rate_limit', 'sms_cooldown']), retryAt: z.number().optional() });
 export class LoginFailure extends Error {
   readonly code: keyof typeof loginFailureMessages;
-  constructor(code: keyof typeof loginFailureMessages = 'captcha_required') {
-    super(loginFailureMessages[code]); this.code = code;
+  readonly retryAt?: number;
+  constructor(code: keyof typeof loginFailureMessages = 'captcha_required', retryAt?: number) {
+    super(loginFailureMessages[code]); this.code = code; this.retryAt = retryAt;
   }
 }
 

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { beginSchema, verifySchema, completeCaptchaSchema, LoginFailure, ActivityFailure, activityRequestSchema } from '@heybox/contracts';
 import { ChallengeStore } from './challenges.ts';
-import { encryptCredential } from './crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 import type { ActivityService } from './activities.ts';
 
 export function authorized(header: string | undefined, token: string) {

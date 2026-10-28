@@ -1,5 +1,5 @@
 import { outcomeSchema, queueMessageSchema, type Job, type Outcome } from '@heybox/contracts';
-import { Store } from '../../web/src/server/store.ts';
+import { Store } from '@heybox/hosting/store';
 import { executeDaily } from './operations.ts';
 import type { Env } from './env.ts';
 
@@ -25,12 +25,15 @@ export async function consume(batch: MessageBatch<unknown>, env: Env, execute: (
     if (!parsed.success) { console.warn(JSON.stringify({ event: 'executor_invalid_message' })); message.ack(); continue; }
     const started = performance.now();
     try {
+      if (env.DAILY_ENABLED !== 'true') {
+        await store.deferQueued(parsed.data);
+        message.ack(); continue;
+      }
       if (batch.queue.endsWith('-dead')) {
         await store.deadLetter(parsed.data);
         console.warn(JSON.stringify({ event: 'executor_dead_letter', jobId: parsed.data.id }));
         message.ack(); continue;
       }
-      if (env.DAILY_ENABLED !== 'true') { message.retry({ delaySeconds: 300 }); continue; }
       const job = await store.claimQueued(parsed.data);
       if (!job) { message.ack(); continue; }
       let result: Outcome & { category?: string };

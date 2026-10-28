@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Store } from '../../web/src/server/store.ts';
+import { Store } from '@heybox/hosting/store';
 import { consume } from '../src/queue.ts';
 import type { Env } from '../src/env.ts';
 import type { Job } from '@heybox/contracts';
@@ -28,18 +28,27 @@ test('unavailable D1 result persistence retries delivery instead of acknowledgin
   await consume(f.batch, f.env, async () => ({ status: 'completed' }));
   assert.deepEqual(f.events, ['retry']); assert.equal(writes, 3);
 });
-test('duplicate delivery never re-executes an already claimed task and disabled consumers defer', async t => {
+test('duplicate delivery never re-executes an already claimed task and disabled consumers return work to D1', async t => {
   const f = fixture(); let claimed = 0;
   t.mock.method(Store.prototype, 'claimQueued', async () => { claimed++; return null; });
   await consume(f.batch, f.env, async () => { throw new Error('must not execute'); });
   assert.deepEqual(f.events, ['ack']);
+  t.mock.method(Store.prototype, 'deferQueued', async () => { f.events.push('deferred'); });
   f.env.DAILY_ENABLED = 'false'; await consume(f.batch, f.env);
-  assert.deepEqual(f.events, ['ack', 'retry']); assert.equal(claimed, 1);
+  assert.deepEqual(f.events, ['ack', 'deferred', 'ack']); assert.equal(claimed, 1);
 });
 
-test('dead letters remain observable when daily execution is disabled', async t => {
+test('disabled consumers recover even dead-letter deliveries without marking business failure', async t => {
   const f = fixture(); f.env.DAILY_ENABLED = 'false';
   t.mock.method(Store.prototype, 'deadLetter', async () => { f.events.push('failed'); });
+  t.mock.method(Store.prototype, 'deferQueued', async () => { f.events.push('deferred'); });
   await consume({ ...f.batch, queue: 'heybox-daily-dead' } as MessageBatch, f.env);
-  assert.deepEqual(f.events, ['failed', 'ack']);
+  assert.deepEqual(f.events, ['deferred', 'ack']);
+});
+
+test('disabled consumer never acknowledges before durable handback succeeds', async t => {
+  const f = fixture(); f.env.DAILY_ENABLED = 'false';
+  t.mock.method(Store.prototype, 'deferQueued', async () => { throw new Error('D1 unavailable'); });
+  await consume(f.batch, f.env);
+  assert.deepEqual(f.events, ['retry']);
 });

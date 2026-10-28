@@ -3,7 +3,8 @@ import type { Config } from 'heybox-daily/types';
 import { normalizePhone } from 'heybox-daily/login';
 import { captchaAppIdSchema, captchaProofSchema, LoginFailure, type CaptchaProof, type LoginProgress } from '@heybox/contracts';
 
-export type LoginStep = { status: 'sent' | 'authenticated'; config: Config } | { status: 'captcha'; appId: string; config: Config };
+import type { LoginStep } from '@heybox/hosting/login';
+export type { LoginStep } from '@heybox/hosting/login';
 type Phase = { status: 'sent' } | { status: 'captcha'; operation: 'send' | 'verify'; appId: string; code?: string };
 type Challenge = { config: Config; phone: string; binding: string; expiresAt: number; attempts: number; captchaAttempts: number;
   usedTickets: Set<string>; phase: Phase; busy: boolean; timer: ReturnType<typeof setTimeout> };

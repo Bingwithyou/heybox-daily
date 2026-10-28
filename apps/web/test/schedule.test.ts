@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runScheduled } from "../src/server/schedule.ts";
 import type { Env } from "../src/server/env.ts";
-import type { Statement } from "../src/server/store.ts";
+import type { Statement } from "@heybox/hosting/store";
 
 test("24 hourly checks clean expired rows once, at Beijing 00:01, and only wake for new jobs", async () => {
   let schedules = 0;
@@ -38,7 +38,7 @@ test("24 hourly checks clean expired rows once, at Beijing 00:01, and only wake 
   try {
     for (let hour = 0; hour < 24; hour++) {
       await runScheduled(env, Date.parse("2026-10-27T00:01:00+08:00") + hour * 3600_000);
-      assert.equal(cleanups, 3);
+      assert.equal(cleanups, 5);
     }
     assert.equal(schedules, 24);
     assert.equal(notifications, 1);

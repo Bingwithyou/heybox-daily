@@ -47,3 +47,13 @@ test("a started task is not completed or skipped until its final state is verifi
   assert.equal(taskStatus("sign", "running", result), "confirming");
   assert.equal(taskStatus("sign"), "waiting");
 });
+
+test("uncertain attempts cannot be displayed as an all-skipped run", () => {
+  const result: Outcome = {
+    ...completed,
+    uncertain: true,
+    execution: Object.fromEntries(taskIds.map((id) => [id, "skipped"])),
+  };
+  assert.equal(runStatus("completed", result), "completed");
+  assert.ok(taskIds.every((id) => taskStatus(id, "completed", result) === "completed"));
+});

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { beijingDate } from '@heybox/contracts';
-import { createDailyCheckpoint } from '../src/checkpoint.ts';
+import { createDailyCheckpoint } from '@heybox/hosting/checkpoint';
 
 test('short jobs check at start and forced finish; long jobs check at 30 seconds', async () => {
   let now = Date.parse('2026-10-28T01:00:00+08:00'); let calls = 0;

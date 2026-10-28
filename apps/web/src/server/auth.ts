@@ -1,5 +1,5 @@
 import { betterAuth, type BetterAuthPlugin } from "better-auth";
-import { createAuthEndpoint, APIError } from "better-auth/api";
+import { createAuthEndpoint, APIError, getSessionFromCtx } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { drizzle } from "drizzle-orm/d1";
@@ -22,9 +22,10 @@ import {
   requireAccount,
 } from "./accounts.ts";
 import * as schema from "./schema.ts";
-import { Store } from "./store.ts";
+import { Store } from "@heybox/hosting/store";
 import type { Env } from "./env.ts";
-import { privateKey, runnerRequest } from "./security.ts";
+import { runnerRequest } from "./security.ts";
+import { privateKey } from "@heybox/hosting/security";
 import { notifyRunnerInBackground } from "./notify.ts";
 import {
   loginLimitMessages,
@@ -54,6 +55,34 @@ export function createAuth(
   const store = new Store(env.DB);
   const cookie =
     new URL(env.SITE_URL).protocol === "https:" ? "__Host-heybox-challenge" : "heybox-challenge";
+  function clearIntent(ctx: Parameters<typeof setSessionCookie>[0]) {
+    for (const name of [cookie, `${cookie}-intent`])
+      ctx.setCookie(name, "", {
+        httpOnly: true,
+        secure: cookie.startsWith("__Host-"),
+        sameSite: "strict",
+        path: "/",
+        maxAge: 0,
+      });
+  }
+  function loginError(error: LoginFailure) {
+    if (error.code !== "sms_cooldown")
+      return new APIError("BAD_REQUEST", { code: error.code, message: error.message });
+    const serverTime = Date.now();
+    const retryAt = error.retryAt ?? serverTime + 60_000;
+    const limit = { rule: "sms:phone:minute" as const, retryAt };
+    return new APIError(
+      "TOO_MANY_REQUESTS",
+      {
+        code: error.code,
+        message: error.message,
+        retryAt,
+        rateLimit: { ...limit, serverTime },
+        smsCooldown: { serverTime, limits: [limit] },
+      },
+      { "Retry-After": String(Math.max(0, Math.ceil((retryAt - serverTime) / 1000))) },
+    );
+  }
   async function loginBackend(ctx: Parameters<typeof setSessionCookie>[0]) {
     const signed = await ctx.getSignedCookie(`${cookie}-intent`, ctx.context.secret);
     if (typeof signed !== "string")
@@ -145,6 +174,8 @@ export function createAuth(
     } catch (error) {
       if (error instanceof APIError) {
         const cooldown = await smsCooldown(phone, ip, timing);
+        if (error.body?.code === "sms_cooldown" && typeof error.body.retryAt === "number")
+          cooldown.limits.push({ rule: "sms:phone:minute", retryAt: error.body.retryAt });
         const blocking = cooldown.limits.toSorted((a, b) => b.retryAt - a.retryAt)[0];
         const headers = new Headers(error.headers);
         const detail =
@@ -171,15 +202,28 @@ export function createAuth(
   async function finish(
     ctx: Parameters<typeof setSessionCookie>[0],
     result: z.infer<typeof runnerLoginResultSchema>,
+    challenge: string,
   ) {
     if (result.status !== "authenticated") return ctx.json(result);
     const intent = await ctx.getSignedCookie(`${cookie}-intent`, ctx.context.secret);
     const binding = ctx.getCookie(cookie);
     if (typeof intent !== "string")
       throw new APIError("BAD_REQUEST", { message: "登录已过期，请重新获取验证码" });
-    const saved = JSON.parse(intent) as { binding: string; account?: string; expires: number };
+    const saved = JSON.parse(intent) as {
+      binding: string;
+      account?: string;
+      expires: number;
+      executor?: string;
+      challenge?: string;
+    };
     if (saved.binding !== binding || saved.expires < Date.now())
       throw new APIError("BAD_REQUEST", { message: "登录已过期，请重新获取验证码" });
+    const recovery = saved.executor === "cloudflare" ? result.recovery : undefined;
+    if (
+      (saved.challenge && saved.challenge !== challenge) ||
+      (recovery && recovery.challenge !== challenge)
+    )
+      throw new APIError("BAD_REQUEST", { message: "登录挑战不匹配" });
     if (saved.account) {
       await requireAccount(ctx, saved.account);
       if (result.credential.account !== saved.account)
@@ -194,44 +238,85 @@ export function createAuth(
       new Set(sessions.map((item) => item.user.id)).size >= 5
     )
       throw new APIError("BAD_REQUEST", { message: "最多同时登录 5 个账号，请先退出一个账号" });
-    const userId = await store.enroll(result.credential);
+    const userId = await store.enroll(result.credential, recovery);
     const user = await ctx.context.internalAdapter.findUserById(userId);
     if (!user) throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
-    const session = await ctx.context.internalAdapter.createSession(user.id);
+    const adapter = ctx.context.internalAdapter;
+    const token = recovery
+      ? await privateKey(`login-session:${challenge}:${binding}`, ctx.context.secret)
+      : undefined;
+    let session = token ? (await adapter.findSession(token))?.session : undefined;
+    if (!session) {
+      try {
+        session =
+          (await adapter.createSession(user.id, false, token ? { token } : undefined, !!token)) ??
+          undefined;
+      } catch (error) {
+        session = token ? (await adapter.findSession(token))?.session : undefined;
+        if (!session) throw error;
+      }
+    }
     if (!session)
       throw new APIError("INTERNAL_SERVER_ERROR", { message: "无法建立网站会话，请重试" });
     // Preserve the other browser accounts, including pre-upgrade sessions.
     for (const existing of sessions.filter((item) => item.user.id !== userId))
       await rememberSession(ctx, existing);
-    await forgetAccount(ctx, userId, sessions);
+    await forgetAccount(
+      ctx,
+      userId,
+      sessions.filter((item) => item.session.token !== session.token),
+    );
     await rememberSession(ctx, { session, user });
     await setSessionCookie(ctx, { session, user });
-    ctx.setCookie(`${cookie}-intent`, "", {
-      httpOnly: true,
-      secure: cookie.startsWith("__Host-"),
-      sameSite: "strict",
-      path: "/",
-      maxAge: 0,
-    });
-    ctx.setCookie(cookie, "", {
-      httpOnly: true,
-      secure: cookie.startsWith("__Host-"),
-      sameSite: "strict",
-      path: "/",
-      maxAge: 0,
-    });
+    if (!recovery) clearIntent(ctx);
     notifyRunnerInBackground(env, execution);
     return ctx.json({
       status: "authenticated",
       account: result.credential.account,
       nickname: user.name,
       avatar: user.image || null,
+      ...(recovery ? { confirmation: challenge } : {}),
     });
   }
   const heyboxPlugin = {
     id: "heybox",
     endpoints: {
       ...accountEndpoints(store),
+      confirmHeyboxLogin: createAuthEndpoint(
+        "/heybox/confirm-login",
+        { method: "POST", body: z.object({ challenge: idSchema }) },
+        async (ctx) => {
+          const signed = await ctx.getSignedCookie(`${cookie}-intent`, ctx.context.secret);
+          if (typeof signed !== "string") return ctx.json({ confirmed: true });
+          const saved = JSON.parse(signed) as {
+            binding: string;
+            challenge?: string;
+            expires: number;
+          };
+          const binding = ctx.getCookie(cookie);
+          if (
+            saved.binding !== binding ||
+            saved.expires <= Date.now() ||
+            (saved.challenge && saved.challenge !== ctx.body.challenge)
+          )
+            throw new APIError("BAD_REQUEST", { message: "登录挑战已过期或不匹配" });
+          const current = await getSessionFromCtx(ctx);
+          const token = await privateKey(
+            `login-session:${ctx.body.challenge}:${binding}`,
+            ctx.context.secret,
+          );
+          if (!current || current.session.token !== token)
+            throw new APIError("UNAUTHORIZED", { message: "请先完成登录" });
+          await runnerRequest(
+            env,
+            "/login/confirm",
+            { challenge: ctx.body.challenge, binding },
+            await loginBackend(ctx),
+          );
+          clearIntent(ctx);
+          return ctx.json({ confirmed: true });
+        },
+      ),
       sendHeyboxCode: createAuthEndpoint(
         "/heybox/send-code",
         {
@@ -271,8 +356,7 @@ export function createAuth(
                   ),
                 );
               } catch (error) {
-                if (error instanceof LoginFailure)
-                  throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
+                if (error instanceof LoginFailure) throw loginError(error);
                 console.warn("登录执行端暂时不可用");
                 throw new APIError("BAD_GATEWAY", {
                   message: "小黑盒暂时无法发送验证码，请稍后重试",
@@ -292,9 +376,10 @@ export function createAuth(
             `${cookie}-intent`,
             JSON.stringify({
               binding,
+              challenge: data.challenge,
               account: ctx.body.expectedAccount,
               executor: env.EXECUTOR_ENABLED === "true" ? "cloudflare" : "legacy",
-              expires: Date.now() + 300_000,
+              expires: data.expiresAt,
             }),
             ctx.context.secret,
             {
@@ -332,13 +417,12 @@ export function createAuth(
               ),
             );
           } catch (error) {
-            if (error instanceof LoginFailure)
-              throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
+            if (error instanceof LoginFailure) throw loginError(error);
             throw new APIError("BAD_REQUEST", {
               message: "验证码错误、已过期或小黑盒暂时不可用，请稍后重试",
             });
           }
-          return finish(ctx, result);
+          return finish(ctx, result, ctx.body.challenge);
         },
       ),
       completeHeyboxCaptcha: createAuthEndpoint(
@@ -365,13 +449,12 @@ export function createAuth(
               ),
             );
           } catch (error) {
-            if (error instanceof LoginFailure)
-              throw new APIError("BAD_REQUEST", { code: error.code, message: error.message });
+            if (error instanceof LoginFailure) throw loginError(error);
             throw new APIError("BAD_REQUEST", {
               message: "人机验证未通过、已过期或小黑盒暂时不可用，请重新验证",
             });
           }
-          return finish(ctx, result);
+          return finish(ctx, result, ctx.body.challenge);
         },
       ),
     },

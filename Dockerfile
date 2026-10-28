@@ -6,9 +6,11 @@ COPY patches ./patches
 COPY apps/web/package.json ./apps/web/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/hosting/package.json ./packages/hosting/package.json
 RUN pnpm install --filter @heybox/runner... --frozen-lockfile --ignore-scripts
 COPY src ./src
 COPY packages/contracts/src ./packages/contracts/src
+COPY packages/hosting/src ./packages/hosting/src
 COPY apps/runner/src ./apps/runner/src
 RUN pnpm build && CI=true pnpm install --filter @heybox/runner... --prod --frozen-lockfile --ignore-scripts
 
@@ -33,6 +35,7 @@ CMD ["login"]
 FROM login AS runner
 COPY --from=app /build/apps/runner ./apps/runner
 COPY --from=app /build/packages/contracts ./packages/contracts
+COPY --from=app /build/packages/hosting ./packages/hosting
 ENV HOST=0.0.0.0 PORT=8788
 ENTRYPOINT ["node", "apps/runner/src/main.ts"]
 CMD []

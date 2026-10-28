@@ -58,6 +58,6 @@ test('business errors release the lease, while busy requests never release anoth
   const call = () => withActivityLease(gate, '123', new AbortController().signal, { waitUntil: () => {} },
     new ActivityTrace({ mode: 'participate', activityId: '9' }), async () => { throw new Error('fixture'); });
   await assert.rejects(call(), /fixture/); assert.equal(releases, 1);
-  busy = true; await assert.rejects(call(), { code: 'activity_busy' }); assert.equal(releases, 1);
+  busy = true; await assert.rejects(call(), { code: 'activity_capacity' }); assert.equal(releases, 1);
   assert.equal(JSON.parse(logs.at(-1)!).busyScope, 'capacity');
 });

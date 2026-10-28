@@ -5,11 +5,11 @@ import { experienceDelta, inspect, runDaily } from 'heybox-daily/tasks';
 import { ActivityError, listActivities, participateActivity } from 'heybox-daily/activities';
 import type { Inspection, TaskSnapshot as InspectionSnapshot } from 'heybox-daily/types';
 import { beijingDate, jobSchema, taskIds, type Job, type Outcome, type TaskSnapshot, activityRequestSchema, ActivityFailure, type ActivityRequest } from '@heybox/contracts';
-import { decryptCredential } from './crypto.ts';
+import { decryptCredential } from '@heybox/hosting/crypto';
 import { fileURLToPath } from 'node:url';
 import { loginStep, type LoginInput } from './login.ts';
 import { createActivityFetch, createDailyFetch } from './login-relay.ts';
-import { createDailyCheckpoint } from './checkpoint.ts';
+import { createDailyCheckpoint } from '@heybox/hosting/checkpoint';
 
 export function failureCategory(error: unknown) {
   if (error instanceof HeyboxApiError && error.captchaRequired) return 'captcha_required';

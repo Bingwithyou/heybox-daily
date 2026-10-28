@@ -1,5 +1,5 @@
 import type { Env } from "./env.ts";
-import { Store } from "./store.ts";
+import { Store } from "@heybox/hosting/store";
 
 export async function publicStats(
   request: Request,

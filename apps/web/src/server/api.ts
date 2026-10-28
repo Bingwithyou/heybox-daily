@@ -8,8 +8,9 @@ import {
 import { createAuth } from "./auth.ts";
 import type { Env } from "./env.ts";
 import { router } from "./rpc.ts";
-import { boundedBody, runnerRequest, sameOrigin, serviceAuthorized } from "./security.ts";
-import { Store } from "./store.ts";
+import { runnerRequest } from "./security.ts";
+import { boundedBody, sameOrigin, serviceAuthorized } from "@heybox/hosting/security";
+import { Store } from "@heybox/hosting/store";
 import { publicStats } from "./stats.ts";
 
 const rpc = new RPCHandler(router);
@@ -17,6 +18,7 @@ const authPaths = new Set([
   "/api/auth/heybox/send-code",
   "/api/auth/heybox/verify-code",
   "/api/auth/heybox/complete-captcha",
+  "/api/auth/heybox/confirm-login",
   "/api/auth/get-session",
   "/api/auth/heybox/accounts",
   "/api/auth/heybox/switch",

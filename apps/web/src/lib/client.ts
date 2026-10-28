@@ -29,7 +29,7 @@ export async function authRequest<T>(
   if (cooldown.success) onCooldown?.(cooldown.data, true);
   if (!response.ok) {
     const failure = loginFailureSchema.safeParse(data);
-    if (failure.success) throw new LoginFailure(failure.data.code);
+    if (failure.success) throw new LoginFailure(failure.data.code, failure.data.retryAt);
     if (response.status === 429 && data.code !== "rate_limited") {
       const retryAfter = Number(
         response.headers.get("retry-after") ?? response.headers.get("x-retry-after"),

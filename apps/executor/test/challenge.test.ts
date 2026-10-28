@@ -34,9 +34,31 @@ test('login state survives hibernation encrypted and preserves browser binding a
   assert.equal(f.storage.alarm, start.expiresAt);
   const resumed = await f.reload();
   await assert.rejects(resumed.verify('1234', 'b'.repeat(64)), /挑战/);
-  assert.equal((await resumed.verify('1234', binding)).status, 'authenticated');
+  const authenticated = await resumed.verify('1234', binding);
+  assert.equal(authenticated.status, 'authenticated');
+  assert.deepEqual(await (await f.reload()).verify('1234', binding), JSON.parse(JSON.stringify(authenticated)));
+  assert.ok(f.storage.data.size > 0);
+  await assert.rejects(resumed.confirm('b'.repeat(64)), /挑战/);
+  await resumed.confirm(binding);
   assert.equal(f.storage.data.size, 0); assert.equal(f.storage.alarm, null);
   await assert.rejects((await f.reload()).verify('1234', binding), /挑战/);
+});
+
+test('successful verification survives a lost response and is never repeated upstream before confirmation', async () => {
+  let calls = 0;
+  const f = await fixture({ verify: async () => { calls++; return { status: 'authenticated', config }; } });
+  await f.challenge.begin('13800138000', binding);
+  const first = await f.challenge.verify('1234', binding);
+  const resumed = await f.reload();
+  assert.deepEqual(await resumed.completeCaptcha(proof, binding), JSON.parse(JSON.stringify(first)));
+  assert.deepEqual(await resumed.verify('1234', binding), JSON.parse(JSON.stringify(first)));
+  assert.equal(calls, 1);
+  for (const secret of ['13800138000', 'secret-token', 'secret-credential', binding])
+    assert.ok(!JSON.stringify([...f.storage.data]).includes(secret));
+  f.advance(300_001);
+  await assert.rejects(resumed.verify('1234', binding), /过期/);
+  await resumed.expire();
+  assert.equal(f.storage.data.size, 0);
 });
 test('tickets and attempt counts are durable and same challenge cannot run concurrent requests', async () => {
   let release!: () => void; let sends = 0;

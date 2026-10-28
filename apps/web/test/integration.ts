@@ -5,7 +5,7 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { RouterClient } from "@orpc/server";
 import type { router } from "../src/server/rpc.ts";
 import { jobSchema, taskIds, LoginTiming, loginTimingHeader } from "@heybox/contracts";
-import { decryptCredential } from "../../runner/src/crypto.ts";
+import { decryptCredential } from "@heybox/hosting/crypto";
 import { smsCooldownSchema, type LoginLimitRule } from "../src/lib/login-cooldown.ts";
 import { verifySeo } from "./seo-integration.ts";
 

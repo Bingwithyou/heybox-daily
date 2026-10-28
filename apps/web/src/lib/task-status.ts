@@ -14,14 +14,16 @@ export const statusNames: Record<string, string> = {
 
 export function taskStatus(id: (typeof taskIds)[number], status?: string, result?: Outcome | null) {
   if (result?.snapshot?.tasks.find((task) => task.id === id)?.state === "finish")
-    return result.execution?.[id] === "skipped" ? "skipped" : "completed";
+    return !result.uncertain && result.execution?.[id] === "skipped" ? "skipped" : "completed";
   if (status === "failed" || status === "auth_expired") return "failed";
   if (status === "running" || status === "queued") return "confirming";
   return "waiting";
 }
 
 export function runStatus(status: string, result?: Outcome | null) {
-  return status === "completed" && taskIds.every((id) => result?.execution?.[id] === "skipped")
+  return status === "completed" &&
+    !result?.uncertain &&
+    taskIds.every((id) => result?.execution?.[id] === "skipped")
     ? "skipped"
     : status;
 }

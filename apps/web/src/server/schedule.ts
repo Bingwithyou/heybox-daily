@@ -1,6 +1,6 @@
 import type { Env } from "./env.ts";
 import { notifyRunner } from "./notify.ts";
-import { Store } from "./store.ts";
+import { Store } from "@heybox/hosting/store";
 
 export async function runScheduled(env: Env, scheduledTime: number) {
   const store = new Store(env.DB);

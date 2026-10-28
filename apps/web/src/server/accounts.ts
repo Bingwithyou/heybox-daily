@@ -6,7 +6,7 @@ import {
   setSessionCookie,
 } from "better-auth/cookies";
 import { z } from "zod";
-import type { Store } from "./store.ts";
+import type { Store } from "@heybox/hosting/store";
 
 type Context = Parameters<typeof setSessionCookie>[0];
 const expectedAccountSchema = z.object({ expectedAccount: z.string().min(1).max(64) });

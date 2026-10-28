@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { encryptCredential, decryptCredential } from '../src/crypto.ts';
+import { encryptCredential, decryptCredential } from '@heybox/hosting/crypto';
 import { ChallengeStore } from '../src/challenges.ts';
 import type { Config } from 'heybox-daily/types';
 

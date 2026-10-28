@@ -1,0 +1,12 @@
+{
+  "name": "@heybox/hosting",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@heybox/contracts": "workspace:*",
+    "heybox-daily": "workspace:*"
+  }
+}

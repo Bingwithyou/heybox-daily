@@ -5,6 +5,7 @@ export interface Env {
   DAILY_QUEUE: Queue<QueueMessage>;
   LOGIN_CHALLENGES: DurableObjectNamespace;
   ACTIVITY_GATE: DurableObjectNamespace;
+  ACTIVITY_READERS: DurableObjectNamespace;
   CREDENTIAL_KEY: string;
   RUNNER_SERVICE_TOKEN: string;
   TOKEN_SERVICE_URL: string;

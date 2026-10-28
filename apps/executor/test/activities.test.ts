@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executeActivity } from '../src/operations.ts';
-import { encryptCredential } from '../../runner/src/crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 
 const key = Buffer.alloc(32, 7).toString('base64');
 const credential = encryptCredential({ session: { heybox_id: '123', pkey: 'private-pkey', device_id: 'private-device', x_xhh_tokenid: 'private-token' },

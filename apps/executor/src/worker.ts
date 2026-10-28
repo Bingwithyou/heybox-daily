@@ -1,7 +1,7 @@
-import { beginSchema, verifySchema, completeCaptchaSchema, activityRequestSchema, credentialSchema, ActivityFailure, LoginTiming, loginTimingHeader } from '@heybox/contracts';
-import { Store } from '../../web/src/server/store.ts';
-import { serviceAuthorized, boundedBody } from '../../web/src/server/security.ts';
-import { decryptCredential } from '../../runner/src/crypto.ts';
+import { beginSchema, verifySchema, completeCaptchaSchema, confirmLoginSchema, activityRequestSchema, credentialSchema, ActivityFailure, LoginTiming, loginTimingHeader } from '@heybox/contracts';
+import { Store } from '@heybox/hosting/store';
+import { serviceAuthorized, boundedBody } from '@heybox/hosting/security';
+import { decryptCredential } from '@heybox/hosting/crypto';
 import { HeyboxClient } from 'heybox-daily/client';
 import { inspect } from 'heybox-daily/tasks';
 import { dispatchDue, consume } from './queue.ts';
@@ -12,6 +12,7 @@ import { beginPreparedLogin } from './login-preparation.ts';
 import { withActivityLease } from './activity-lifecycle.ts';
 import { ActivityTrace } from './activity-trace.ts';
 export { LoginChallenge, ActivityGate } from './objects.ts';
+export { ActivityReader } from './activity-reader.ts';
 
 export default {
   async fetch(request: Request, env: Env, context: ExecutionContext): Promise<Response> {
@@ -28,12 +29,13 @@ export default {
       const input: unknown = JSON.parse(new TextDecoder().decode(raw));
       if (path.startsWith('/login/')) {
         const data = path === '/login/begin' ? { ...beginSchema.parse(input), challenge: crypto.randomUUID() }
-          : path === '/login/verify' ? verifySchema.parse(input) : path === '/login/captcha' ? completeCaptchaSchema.parse(input) : null;
+          : path === '/login/verify' ? verifySchema.parse(input) : path === '/login/captcha' ? completeCaptchaSchema.parse(input)
+          : path === '/login/confirm' ? confirmLoginSchema.parse(input) : null;
         if (!data) return new Response(null, { status: 404 });
         const stub = env.LOGIN_CHALLENGES.get(env.LOGIN_CHALLENGES.idFromName(data.challenge));
-        if (path === '/login/begin' && env.LOGIN_PREPARE_PARALLEL !== 'false' && 'phone' in data) {
+        if (path === '/login/begin' && env.LOGIN_PREPARE_PARALLEL !== 'false' && 'phone' in data && typeof data.phone === 'string') {
           const timing = new LoginTiming(request.headers.get(loginTimingHeader));
-          try { return await beginPreparedLogin(stub, data, env, timing, request.signal); }
+          try { return await beginPreparedLogin(stub, { ...data, phone: data.phone }, env, timing, request.signal); }
           catch {
             console.warn(JSON.stringify({ event: 'executor_login_prepare_failed', requestId: timing.id, stages: timing.values }));
             return Response.json({ error: '登录准备失败，请稍后重试' }, { status: 400,
@@ -47,10 +49,24 @@ export default {
       }
       if (path === '/activities') {
         const data = activityRequestSchema.parse(input);
+        const reader = env.ACTIVITY_READERS.get(env.ACTIVITY_READERS.idFromName(data.credential.account));
+        if (data.mode === 'list') {
+          const operation = reader.fetch('https://reader/list', { method: 'POST', body: JSON.stringify(data), signal: request.signal });
+          context.waitUntil(operation.then(() => {}, () => {}));
+          return operation;
+        }
+        const invalidate = async () => {
+          const response = await reader.fetch('https://reader/invalidate', { method: 'POST', body: JSON.stringify(data.credential) });
+          if (!response.ok) throw new ActivityFailure('activity_upstream');
+        };
         const trace = new ActivityTrace(data);
         const gate = env.ACTIVITY_GATE.get(env.ACTIVITY_GATE.idFromName('global'));
         const result = await withActivityLease(gate, data.credential.account, request.signal, context, trace,
-          () => executeActivity(data, env.CREDENTIAL_KEY, new Store(env.DB), fetch, request.signal, trace));
+          async () => {
+            await invalidate();
+            try { return await executeActivity(data, env.CREDENTIAL_KEY, new Store(env.DB), fetch, request.signal, trace); }
+            finally { await invalidate(); }
+          });
         return Response.json(result);
       }
       if (path === '/diagnostics/inspect') {
@@ -66,7 +82,7 @@ export default {
       }
       return new Response(null, { status: 404 });
     } catch (error) {
-      if (error instanceof ActivityFailure) return Response.json({ code: error.code, error: error.message }, { status: error.code === 'activity_busy' ? 409 : 400 });
+      if (error instanceof ActivityFailure) return Response.json({ code: error.code, error: error.message }, { status: ['activity_busy', 'activity_capacity'].includes(error.code) ? 409 : 400 });
       console.warn(JSON.stringify({ event: 'executor_request_failed', path }));
       return Response.json({ error: '执行服务暂时不可用' }, { status: 400 });
     }

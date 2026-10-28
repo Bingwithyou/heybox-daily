@@ -10,8 +10,9 @@ const rewards = [
 export function Rewards({
   result,
 }: {
-  result?: Pick<Outcome, "expDelta" | "coinDelta" | "batteryDelta"> | null;
+  result?: Pick<Outcome, "expDelta" | "coinDelta" | "batteryDelta" | "uncertain"> | null;
 }) {
+  if (result?.uncertain) return <span className="text-sm text-muted-foreground">收益未确认</span>;
   return (
     <span className="inline-flex flex-wrap items-center gap-x-5 gap-y-2 text-sm tabular-nums">
       {rewards.map(({ field, name, icon }) => (

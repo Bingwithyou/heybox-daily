@@ -4,7 +4,7 @@ import { ActivityService } from '../src/activities.ts';
 import { ActivityFailure, type ActivityRequest, type ActivityResult } from '@heybox/contracts';
 import { createRunnerServer } from '../src/server.ts';
 import { ChallengeStore } from '../src/challenges.ts';
-import { encryptCredential } from '../src/crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 import { runChild } from '../src/process.ts';
 
 const credential = { account: '123', version: crypto.randomUUID(), ciphertext: 'encrypted-fixture'.repeat(3) };

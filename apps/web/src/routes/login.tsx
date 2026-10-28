@@ -22,7 +22,7 @@ import {
   type CooldownState,
 } from "../lib/login-cooldown";
 
-type LoginResult = LoginProgress | (Account & { status: "authenticated" });
+type LoginResult = LoginProgress | (Account & { status: "authenticated"; confirmation?: string });
 
 export const Route = createFileRoute("/login")({
   head: () => privatePageHead("登录 · Heybox Daily"),
@@ -90,6 +90,10 @@ function Login() {
   }, []);
   async function applyResult(result: LoginResult) {
     if (result.status === "authenticated") {
+      if (result.confirmation)
+        void authRequest("heybox/confirm-login", { challenge: result.confirmation }).catch(
+          () => {},
+        );
       saveCooldown(emptyCooldownState());
       setAccount(result);
       await refreshAccounts();
@@ -161,10 +165,23 @@ function Login() {
     try {
       const proof = await showCaptcha(captcha.appId, captcha.expiresAt, controller.signal);
       if (!proof || controller.signal.aborted) return;
-      const result = await authRequest<LoginResult>("heybox/complete-captcha", {
-        challenge: captcha.challenge,
-        ...proof,
-      });
+      const result = await authRequest<LoginResult>(
+        "heybox/complete-captcha",
+        {
+          challenge: captcha.challenge,
+          ...proof,
+        },
+        (value) =>
+          saveCooldown(
+            applySmsCooldown(
+              cooldownRef.current,
+              phoneSchema.parse(phone),
+              value,
+              Date.now(),
+              false,
+            ),
+          ),
+      );
       await applyResult(result);
       if (result.status === "captcha") setError("小黑盒要求重新验证，请再次完成人机验证");
     } catch (e) {

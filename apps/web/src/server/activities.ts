@@ -6,7 +6,7 @@ import {
   type ActivityResult,
 } from "@heybox/contracts";
 import type { Env } from "./env.ts";
-import type { Store } from "./store.ts";
+import type { Store } from "@heybox/hosting/store";
 import { runnerRequest } from "./security.ts";
 
 type Input = { expectedAccount: string } & (
@@ -48,9 +48,12 @@ export async function activityRequest(
     return result;
   } catch (error) {
     if (error instanceof ActivityFailure)
-      throw new ORPCError(error.code === "activity_busy" ? "CONFLICT" : "BAD_REQUEST", {
-        message: error.message,
-      });
+      throw new ORPCError(
+        ["activity_busy", "activity_capacity"].includes(error.code) ? "CONFLICT" : "BAD_REQUEST",
+        {
+          message: error.message,
+        },
+      );
     throw new ORPCError("BAD_GATEWAY", { message: "活动服务暂时不可用，请稍后刷新状态" });
   }
 }

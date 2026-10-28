@@ -1,6 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { beginSchema, verifySchema, completeCaptchaSchema, idSchema, LoginFailure, LoginTiming, loginTimingHeader } from '@heybox/contracts';
-import { encryptCredential } from '../../runner/src/crypto.ts';
+import { beginSchema, verifySchema, completeCaptchaSchema, confirmLoginSchema, idSchema, LoginFailure, LoginTiming, loginTimingHeader } from '@heybox/contracts';
 import { PersistentChallenge } from './challenge.ts';
 import { loginOperations, failureCategory } from './operations.ts';
 import type { Env } from './env.ts';
@@ -31,6 +30,10 @@ export class LoginChallenge extends DurableObject<Env> {
         // Initialization only: no login state, alarm, token or SMS side effect.
         return Response.json({ ready: true }, { headers: { 'server-timing': timing.header(), [loginTimingHeader]: timing.id } });
       }
+      if (action === '/confirm') {
+        await this.challenge!.confirm(confirmLoginSchema.parse(input).binding);
+        return reply({ confirmed: true });
+      }
       let result;
       if (action === '/begin') {
         const value = beginSchema.parse(input);
@@ -44,15 +47,15 @@ export class LoginChallenge extends DurableObject<Env> {
         const value = completeCaptchaSchema.parse(input);
         result = await this.challenge!.completeCaptcha(value, value.binding, timing);
       } else return new Response(null, { status: 404 });
-      const response = reply(result.status === 'authenticated'
-        ? { status: 'authenticated', credential: encryptCredential(result.config, this.env.CREDENTIAL_KEY) } : result);
+      const response = reply(result);
       console.log(JSON.stringify({ event: 'executor_login', action, outcome: result.status,
         requestId: timing.id, durationMs: Math.round(performance.now() - started), stages: timing.values }));
       return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       const safe = /挑战|处理中|繁忙|人机验证/.test(message) ? message : '验证码错误、已过期或小黑盒暂时不可用，请稍后重试';
-      const response = reply(error instanceof LoginFailure ? { code: error.code, error: error.message } : { error: safe }, 400);
+      const response = reply(error instanceof LoginFailure ? { code: error.code, error: error.message, retryAt: error.retryAt } : { error: safe },
+        error instanceof LoginFailure && error.code === 'sms_cooldown' ? 429 : 400);
       console.warn(JSON.stringify({ event: 'executor_login_failed', action, category: failureCategory(error),
         requestId: timing.id, durationMs: Math.round(performance.now() - started), stages: timing.values }));
       return response;
@@ -86,7 +89,8 @@ export class ActivityGate extends DurableObject<Env> {
       }
       if (action !== '/acquire') return new Response(null, { status: 404 });
       if (leases.some(value => value.account === input.account)) return Response.json({ token: null, reason: 'account' });
-      if (leases.length >= 4) return Response.json({ token: null, reason: 'capacity' });
+      const limit = this.ctx.id.toString() === this.env.ACTIVITY_GATE.idFromName('reads').toString() ? 8 : 4;
+      if (leases.length >= limit) return Response.json({ token: null, reason: 'capacity' });
       const token = crypto.randomUUID();
       leases.push({ account: input.account, token, expiresAt: Date.now() + 95_000 });
       await this.save(leases);

@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { beijingDate, type Job } from '@heybox/contracts';
 import { TaskQueue } from '../src/queue.ts';
 import { runChild } from '../src/process.ts';
-import { encryptCredential } from '../src/crypto.ts';
+import { encryptCredential } from '@heybox/hosting/crypto';
 
 const exec = promisify(execFile);
 const directory = await mkdtemp(join(tmpdir(), 'heybox-concurrency-'));

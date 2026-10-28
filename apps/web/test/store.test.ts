@@ -1,69 +1,132 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { readFileSync, readdirSync } from "node:fs";
-import { Store, type Database, type Statement } from "../src/server/store.ts";
-import { beijingDate, nextRunAt, type Credential } from "@heybox/contracts";
+import { fixture } from "../../../packages/hosting/test/database.ts";
+import { beijingDate, nextRunAt, taskIds, type Credential } from "@heybox/contracts";
 
-function fixture() {
-  const db = new DatabaseSync(":memory:");
-  const queries: Array<{ sql: string; values: unknown[] }> = [];
-  const migrations = new URL("../migrations/", import.meta.url);
-  for (const file of readdirSync(migrations)
-    .filter((name) => name.endsWith(".sql"))
-    .sort()) {
-    db.exec(readFileSync(new URL(file, migrations), "utf8"));
+test("paused delivery stays queued without attempts and stale delivery cannot undo a new reservation", async () => {
+  const f = fixture();
+  try {
+    const user = await f.store.enroll(credential("123"));
+    const [message] = await f.store.reserveDispatch();
+    await f.store.markDispatched(message.token);
+    await f.store.deferQueued(message);
+    const paused = (await f.store.dashboard(user))!.today!;
+    assert.equal(paused.status, "queued");
+    assert.equal(paused.attempts, 0);
+    const [replacement] = await f.store.reserveDispatch();
+    assert.notEqual(replacement.token, message.token);
+    await f.store.deferQueued(message);
+    assert.equal(await f.store.claimQueued(message), null);
+    const job = await f.store.claimQueued(replacement);
+    assert.ok(job);
+    await f.store.deferQueued(replacement);
+    assert.equal((await f.store.dashboard(user))!.today!.status, "running");
+  } finally {
+    f.close();
   }
-  class Query implements Statement {
-    readonly sql: string;
-    values: unknown[] = [];
-    constructor(sql: string) {
-      this.sql = sql;
-    }
-    bind(...values: unknown[]) {
-      this.values = values;
-      return this;
-    }
-    execute() {
-      queries.push({ sql: this.sql, values: this.values });
-      const stmt = db.prepare(this.sql);
-      return stmt.all(...(this.values as Array<string | number | null>));
-    }
-    async first<T>() {
-      return (this.execute()[0] || null) as T | null;
-    }
-    async all<T>() {
-      return { results: this.execute() as T[] };
-    }
-    async run() {
-      return this.execute();
-    }
+});
+
+test("lost execution results stay uncertain after a zero-reward all-skipped retry", async () => {
+  const f = fixture();
+  try {
+    const user = await f.store.enroll(credential("123"));
+    const original = (await f.store.claim())!;
+    // The upstream side effect succeeded, but every result write was lost.
+    f.advance(300_001);
+    const retry = (await f.store.claim())!;
+    assert.equal(retry.id, original.id);
+    assert.notEqual(retry.lease, original.lease);
+    assert.equal(
+      await f.store.finish(original.id, original.lease, original.credential.version, {
+        status: "completed",
+        expDelta: 10,
+      }),
+      false,
+    );
+    await f.store.finish(retry.id, retry.lease, retry.credential.version, {
+      status: "completed",
+      expDelta: 0,
+      coinDelta: 0,
+      batteryDelta: 0,
+      execution: { sign: "skipped", "1": "skipped", "19": "skipped", "31": "skipped" },
+      snapshot: { exp: 110, coin: 0, tasks: taskIds.map((id) => ({ id, state: "finish" })) },
+    });
+    const result = (await f.store.dashboard(user))!.today!.result!;
+    assert.equal(result.uncertain, true);
+    assert.equal(result.expDelta, undefined);
+    assert.equal(result.coinDelta, undefined);
+    assert.equal(result.batteryDelta, undefined);
+    assert.deepEqual(result.execution, {});
+    assert.ok(result.snapshot!.tasks.every((task) => task.state === "finish"));
+  } finally {
+    f.close();
   }
-  const adapter: Database = {
-    prepare: (sql) => new Query(sql),
-    batch: async (statements) => {
-      db.exec("BEGIN");
-      try {
-        const results = statements.map((stmt) => (stmt as Query).execute());
-        db.exec("COMMIT");
-        return results;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
-    },
-  };
-  let now = Date.parse("2026-10-27T00:01:00+08:00");
-  return {
-    db,
-    queries,
-    store: new Store(adapter, () => now),
-    advance: (ms: number) => {
-      now += ms;
-    },
-    close: () => db.close(),
-  };
-}
+});
+
+test("SMS send admission is atomic across challenges and old owners cannot release a new send", async () => {
+  const f = fixture();
+  try {
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => f.store.acquireSmsSend("phone-hash")),
+    );
+    const accepted = results.filter((row) => row.token);
+    assert.equal(accepted.length, 1);
+    const first = accepted[0];
+    await f.store.finishSmsSend("phone-hash", first.token!, false);
+    const second = await f.store.acquireSmsSend("phone-hash");
+    assert.ok(second.token);
+    await f.store.finishSmsSend("phone-hash", first.token!, false);
+    assert.equal((await f.store.acquireSmsSend("phone-hash")).token, undefined);
+    await f.store.finishSmsSend("phone-hash", second.token!, true);
+    f.advance(59_999);
+    assert.equal((await f.store.acquireSmsSend("phone-hash")).token, undefined);
+    f.advance(1);
+    assert.ok((await f.store.acquireSmsSend("phone-hash")).token);
+  } finally {
+    f.close();
+  }
+});
+
+test("login receipts make enrollment atomic and idempotent without resetting current work or newer credentials", async () => {
+  const f = fixture();
+  try {
+    const value = credential("123");
+    const receipt = { challenge: crypto.randomUUID(), expiresAt: f.store.now() + 300_000 };
+    const user = await f.store.enroll(value, receipt);
+    const job = (await f.store.claim())!;
+    await Promise.all([f.store.enroll(value, receipt), f.store.enroll(value, receipt)]);
+    assert.equal((await f.store.dashboard(user))!.today!.status, "running");
+    assert.equal((await f.store.dashboard(user))!.today!.attempts, 1);
+    assert.equal(await f.store.heartbeat(job.id, job.lease, value.version), true);
+    const newer = credential("123");
+    await f.store.enroll(newer);
+    await assert.rejects(f.store.enroll(value, receipt), /新的登录/);
+    assert.equal((await f.store.activityCredential(user))!.version, newer.version);
+    f.advance(300_001);
+    await assert.rejects(f.store.enroll(value, receipt), /过期/);
+  } finally {
+    f.close();
+  }
+});
+
+test("a failed initial job insert rolls back the login receipt and credentials together", async () => {
+  const f = fixture();
+  try {
+    const value = credential("123");
+    const receipt = { challenge: crypto.randomUUID(), expiresAt: f.store.now() + 300_000 };
+    f.db.exec(
+      "CREATE TRIGGER reject_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'injected failure'); END;",
+    );
+    await assert.rejects(f.store.enroll(value, receipt), /injected failure/);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM user").get()!.n, 0);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM login_receipts").get()!.n, 0);
+    f.db.exec("DROP TRIGGER reject_job");
+    assert.equal(await f.store.enroll(value, receipt), "heybox:123");
+    assert.ok(await f.store.claim());
+  } finally {
+    f.close();
+  }
+});
 
 test("queue outbox reserves messages once and permits replay only after a lost send lease", async () => {
   const f = fixture();
@@ -185,15 +248,17 @@ test("queue messages cannot revive paused, replaced, deleted or cross-day accoun
   }
 });
 
-test("dead letters fail only the current unpublished business attempt and allow explicit retry", async () => {
+test("dead letters after a failed pause handback remain pending when delivery resumes", async () => {
   const f = fixture();
   try {
     const id = await f.store.enroll(credential("123"));
     const [message] = await f.store.reserveDispatch();
     await f.store.markDispatched(message.token);
     await f.store.deadLetter(message);
-    assert.equal((await f.store.dashboard(id))?.today?.status, "failed");
-    await f.store.enqueue(id, true);
+    assert.equal((await f.store.dashboard(id))?.today?.status, "queued");
+    assert.equal((await f.store.dashboard(id))?.today?.attempts, 0);
+    assert.deepEqual(await f.store.reserveDispatch(), []);
+    f.advance(60_000);
     const [retry] = await f.store.reserveDispatch();
     await f.store.deadLetter(message);
     assert.ok(await f.store.claimQueued(retry), "a stale dead letter does not fail a new attempt");

@@ -195,6 +195,9 @@ importers:
       '@heybox/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@heybox/hosting':
+        specifier: workspace:*
+        version: link:../../packages/hosting
       heybox-daily:
         specifier: workspace:*
         version: link:../..
@@ -217,6 +220,9 @@ importers:
       '@heybox/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@heybox/hosting':
+        specifier: workspace:*
+        version: link:../../packages/hosting
       heybox-daily:
         specifier: workspace:*
         version: link:../..
@@ -232,6 +238,9 @@ importers:
       '@heybox/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@heybox/hosting':
+        specifier: workspace:*
+        version: link:../../packages/hosting
       '@orpc/client':
         specifier: 1.16.1
         version: 1.16.1
@@ -314,6 +323,15 @@ importers:
       zod:
         specifier: 4.6.7
         version: 4.6.7
+
+  packages/hosting:
+    dependencies:
+      '@heybox/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      heybox-daily:
+        specifier: workspace:*
+        version: link:../..
 
 packages:
 
