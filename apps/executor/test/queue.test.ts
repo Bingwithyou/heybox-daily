@@ -52,3 +52,13 @@ test('disabled consumer never acknowledges before durable handback succeeds', as
   await consume(f.batch, f.env);
   assert.deepEqual(f.events, ['retry']);
 });
+
+test('a message denied by the shared start gate waits in Queue without executing or acknowledging', async t => {
+  const f = fixture();
+  let options: QueueRetryOptions | undefined;
+  f.batch.messages[0].retry = value => { options = value; f.events.push('retry'); };
+  t.mock.method(Store.prototype, 'claimQueued', async function (this: Store) { this.nextStartAt = this.now() + 4000; return null; });
+  await consume(f.batch, f.env, async () => { throw new Error('must not execute'); });
+  assert.deepEqual(f.events, ['retry']);
+  assert.ok(options!.delaySeconds! > 0 && options!.delaySeconds! <= 4);
+});

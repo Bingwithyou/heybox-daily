@@ -14,7 +14,7 @@
   "queues": {
     "producers": [{ "binding": "DAILY_QUEUE", "queue": "heybox-daily-tasks" }],
     "consumers": [
-      { "queue": "heybox-daily-tasks", "max_batch_size": 1, "max_batch_timeout": 1, "max_concurrency": 8,
+      { "queue": "heybox-daily-tasks", "max_batch_size": 1, "max_batch_timeout": 1, "max_concurrency": 6,
         "max_retries": 5, "retry_delay": 60, "dead_letter_queue": "heybox-daily-dead" },
       { "queue": "heybox-daily-dead", "max_batch_size": 10, "max_batch_timeout": 5, "max_concurrency": 1 }
     ]

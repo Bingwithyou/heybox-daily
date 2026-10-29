@@ -34,11 +34,15 @@ type JobRow = {
   available_at: number;
 };
 
+export const DAILY_START_INTERVAL_MS = 4000;
+export const DAILY_DISPATCH_LIMIT = 32;
+
 export class Store {
   readonly db: Database;
   readonly now: () => number;
   private retryAfterSeconds = 1800;
   nextRetryAt: number | null = null;
+  nextStartAt: number | null = null;
   get retryAfter() {
     return this.retryAfterSeconds;
   }
@@ -218,7 +222,10 @@ export class Store {
         ELSE MAX(j.available_at,COALESCE((SELECT MAX(other.lease_until)+1 FROM jobs other
           WHERE other.user_id=j.user_id AND other.lease_until>=?),0)) END) AS due
       FROM jobs j JOIN hosting h ON h.user_id=j.user_id
-      WHERE j.status IN ('queued','running') AND h.enabled=1 AND h.credential_state='valid')) AS due`,
+      WHERE j.status IN ('queued','running') AND h.enabled=1 AND h.credential_state='valid')) AS due,
+      (SELECT next_start_at FROM daily_scheduler WHERE id=1) AS next_start_at,
+      (EXISTS(SELECT 1 FROM jobs WHERE status IN ('queued','running') AND date<?)
+       OR EXISTS(SELECT 1 FROM jobs WHERE status IN ('queued','running') AND date>?)) AS needs_recovery`,
       now,
       date,
       now,
@@ -227,9 +234,11 @@ export class Store {
       now,
       now,
       now,
-    ).first<{ due: number | null }>();
+      date,
+      date,
+    ).first<{ due: number | null; next_start_at: number; needs_recovery: number }>();
     const midnight = Date.parse(`${beijingDate(now)}T00:00:00+08:00`) + 86400_000;
-    const due = Math.min(row?.due ?? now + 1_800_000, midnight);
+    const due = row?.needs_recovery ? now : Math.min(Math.max(row?.due ?? now + 1_800_000, row?.next_start_at ?? 0), midnight);
     this.retryAfterSeconds = Math.max(1, Math.min(1800, Math.ceil((due - now) / 1000)));
     return due;
   }
@@ -250,7 +259,8 @@ export class Store {
         beijingDate(now),
       ),
       this.sql(
-        `UPDATE jobs SET available_at=? + CASE WHEN attempts<=1 THEN 300000 WHEN attempts=2 THEN 1200000 WHEN attempts=3 THEN 3600000 ELSE 7200000 END + abs(random()%60001)
+        `UPDATE jobs SET available_at=? + CASE WHEN attempts<=1 THEN 300000 WHEN attempts=2 THEN 1200000 WHEN attempts=3 THEN 3600000 ELSE 7200000 END
+        + abs(random()%(CASE WHEN attempts<=1 THEN 300001 WHEN attempts=2 THEN 1200001 WHEN attempts=3 THEN 3600001 ELSE 7200001 END))
         WHERE status='running' AND lease_until<?`, now, now,
       ),
       this.sql(
@@ -271,50 +281,75 @@ export class Store {
         WHERE status='unknown' AND finished_at=? AND EXISTS(SELECT 1 FROM jobs WHERE id=job_id AND lease IS NULL)`, now, now),
     ]);
   }
-  async reserveDispatch(limit = 100): Promise<QueueMessage[]> {
+  async reserveDispatch(limit = DAILY_DISPATCH_LIMIT): Promise<Array<QueueMessage & { delaySeconds: number }>> {
     await this.recover();
     const now = this.now();
     const token = crypto.randomUUID();
-    const rows = await this.sql(
-      `UPDATE jobs SET queue_token=?,queue_published=0,dispatch_until=? WHERE id IN (
-        SELECT j.id FROM jobs j JOIN hosting h ON h.user_id=j.user_id
+    await this.db.batch([this.sql(
+      `WITH candidates AS MATERIALIZED (
+        SELECT j.id,j.available_at,j.created_at FROM jobs j JOIN hosting h ON h.user_id=j.user_id
         WHERE j.status='queued' AND j.date=? AND j.queue_published IN (0,1) AND j.available_at<=?
-        AND j.dispatch_until<=? AND h.enabled=1 AND h.credential_state='valid'
+        AND j.dispatch_until<=? AND j.attempts<${DAILY_ATTEMPT_LIMIT} AND h.enabled=1 AND h.credential_state='valid'
         AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?)
-        ORDER BY j.available_at,j.created_at LIMIT ?
-      ) RETURNING id,queue_token AS token`,
-      token,
-      now + 60_000,
+        ORDER BY j.available_at,j.created_at,j.id LIMIT MAX(0,MIN(?,${DAILY_DISPATCH_LIMIT}-(
+          SELECT COUNT(*) FROM jobs WHERE date=? AND (status='running' OR
+            (status='queued' AND queue_token IS NOT NULL AND dispatch_until>?))
+        )))
+      ), slots AS MATERIALIZED (
+        SELECT id,MAX(?,(SELECT MAX(next_start_at,next_dispatch_at) FROM daily_scheduler WHERE id=1))
+          +(ROW_NUMBER() OVER (ORDER BY available_at,created_at,id)-1)*${DAILY_START_INTERVAL_MS} AS at
+        FROM candidates
+      )
+      UPDATE jobs SET queue_token=?,queue_published=0,
+        dispatch_at=(SELECT at FROM slots WHERE slots.id=jobs.id),
+        dispatch_until=(SELECT at+60000 FROM slots WHERE slots.id=jobs.id)
+      WHERE id IN (SELECT id FROM slots)`,
       beijingDate(now),
       now,
       now,
       now,
       limit,
-    ).all<QueueMessage>();
+      beijingDate(now),
+      now,
+      now,
+      token,
+    ), this.sql(
+      `UPDATE daily_scheduler SET next_dispatch_at=COALESCE(
+        (SELECT MAX(dispatch_at)+${DAILY_START_INTERVAL_MS} FROM jobs WHERE queue_token=?),next_dispatch_at) WHERE id=1`, token,
+    )]);
+    const rows = await this.sql(
+      `SELECT id,queue_token AS token,MAX(0,CAST((dispatch_at-?+999)/1000 AS INTEGER)) AS delaySeconds
+       FROM jobs WHERE queue_token=? ORDER BY dispatch_at,id`, now, token,
+    ).all<QueueMessage & { delaySeconds: number }>();
     return rows.results;
   }
   async markDispatched(token: string) {
     // Delivery may have already claimed or finished the task. Never change that new state.
     // Reconcile an unclaimed message after one hour, including an exhausted dead-letter delivery.
     await this.sql(
-      "UPDATE jobs SET queue_published=1,dispatch_until=? WHERE queue_token=? AND status='queued'",
+      "UPDATE jobs SET queue_published=1,dispatch_until=MAX(?,dispatch_at+3600000) WHERE queue_token=? AND status='queued'",
       this.now() + 3600_000,
       token,
     ).run();
   }
-  private async beginAttempt(statement: Statement, lease: string): Promise<JobRow | null> {
+  private async beginAttempt(statement: Statement, lease: string, now: number): Promise<JobRow | null> {
     await this.db.batch([statement, this.sql(
+      `UPDATE daily_scheduler SET next_start_at=? WHERE id=1
+       AND EXISTS(SELECT 1 FROM jobs WHERE lease=? AND status='running')`, now + DAILY_START_INTERVAL_MS, lease,
+    ), this.sql(
       `INSERT INTO job_attempts(id,job_id,number,started_at,status)
        SELECT lease,id,attempts,updated_at,'running' FROM jobs WHERE lease=? AND status='running'`, lease)]);
     return this.sql("SELECT * FROM jobs WHERE lease=? AND status='running'", lease).first<JobRow>();
   }
   async claimQueued(message: QueueMessage): Promise<Job | null> {
+    this.nextStartAt = null;
     const now = this.now();
     const lease = crypto.randomUUID();
     const row = await this.beginAttempt(this.sql(
       `UPDATE jobs SET status='running',attempts=attempts+1,lease=?,lease_until=?,updated_at=?,
       version=(SELECT version FROM hosting WHERE user_id=jobs.user_id)
       WHERE id=? AND queue_token=? AND status='queued' AND attempts<${DAILY_ATTEMPT_LIMIT} AND available_at<=? AND date=?
+      AND dispatch_at<=? AND (SELECT next_start_at FROM daily_scheduler WHERE id=1)<=?
       AND EXISTS(SELECT 1 FROM hosting WHERE user_id=jobs.user_id AND enabled=1 AND credential_state='valid')
       AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=jobs.user_id AND other.lease_until>=?) RETURNING *`,
       lease,
@@ -325,8 +360,21 @@ export class Store {
       now,
       beijingDate(now),
       now,
-    ), lease);
-    if (!row) return null;
+      now,
+      now,
+    ), lease, now);
+    if (!row) {
+      const waiting = await this.sql(
+        `SELECT MAX(?,j.available_at,j.dispatch_at,(SELECT next_start_at FROM daily_scheduler WHERE id=1),
+          COALESCE((SELECT MAX(other.lease_until)+1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?),0)) AS next_at
+         FROM jobs j JOIN hosting h ON h.user_id=j.user_id
+         WHERE j.id=? AND j.queue_token=? AND j.status='queued' AND j.attempts<${DAILY_ATTEMPT_LIMIT}
+         AND j.date=? AND h.enabled=1 AND h.credential_state='valid'`,
+        now + 1, now, message.id, message.token, beijingDate(now),
+      ).first<{ next_at: number }>();
+      this.nextStartAt = waiting?.next_at ?? null;
+      return null;
+    }
     const credential = await this.sql(
       "SELECT heybox_id AS account,version,ciphertext FROM hosting WHERE user_id=? AND version=? AND credential_state='valid'",
       row.user_id,
@@ -360,14 +408,16 @@ export class Store {
       WHERE id=(SELECT j.id FROM jobs j JOIN hosting h ON h.user_id=j.user_id
         WHERE j.status='queued' AND j.attempts<${DAILY_ATTEMPT_LIMIT} AND j.available_at<=? AND j.date=? AND h.enabled=1 AND h.credential_state='valid'
         AND NOT EXISTS(SELECT 1 FROM jobs other WHERE other.user_id=j.user_id AND other.lease_until>=?)
-        ORDER BY j.available_at,j.created_at LIMIT 1) RETURNING *`,
+        ORDER BY j.available_at,j.created_at LIMIT 1)
+      AND (SELECT next_start_at FROM daily_scheduler WHERE id=1)<=? RETURNING *`,
       lease,
       now + 300_000,
       now,
       now,
       beijingDate(now),
       now,
-    ), lease);
+      now,
+    ), lease, now);
     if (!row) {
       await this.nextWorkAt();
       return null;

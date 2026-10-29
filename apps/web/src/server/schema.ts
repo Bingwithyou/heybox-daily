@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { sqliteTable, text, integer, uniqueIndex, index, check } from "drizzle-orm/sqlite-core";
 
 export const user = sqliteTable("user", {
   id: text("id").primaryKey(),
@@ -85,6 +86,7 @@ export const jobs = sqliteTable(
     queueToken: text("queue_token"),
     queuePublished: integer("queue_published").notNull().default(0),
     dispatchUntil: integer("dispatch_until").notNull().default(0),
+    dispatchAt: integer("dispatch_at").notNull().default(0),
   },
   (t) => [
     uniqueIndex("jobs_user_day").on(t.userId, t.date),
@@ -100,6 +102,15 @@ export const jobs = sqliteTable(
     index("jobs_queue_token").on(t.queueToken),
     index("jobs_lease").on(t.lease),
   ],
+);
+export const dailyScheduler = sqliteTable(
+  "daily_scheduler",
+  {
+    id: integer("id").primaryKey(),
+    nextStartAt: integer("next_start_at").notNull().default(0),
+    nextDispatchAt: integer("next_dispatch_at").notNull().default(0),
+  },
+  (t) => [check("daily_scheduler_singleton", sql`${t.id} = 1`)],
 );
 export const rateLimits = sqliteTable("rate_limits", {
   key: text("key").primaryKey(),

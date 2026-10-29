@@ -92,8 +92,50 @@ test("retry policy differentiates transient, rate limited and permanent failures
   );
   for (const category of ["captcha", "protocol", "rejected", "internal", "auth"] as const)
     assert.equal(retryDelay(failure(category), 1), null);
-  assert.equal(retryDelay(failure("http", 403), 1), null);
+  assert.equal(
+    retryDelay(failure("http", 403), 1, () => 0),
+    300_000,
+  );
+  for (const status of [400, 401, 404]) assert.equal(retryDelay(failure("http", status), 1), null);
   assert.equal(retryDelay(failure("network"), 5), null);
+});
+
+test("HTTP 403 is delayed and retried within the daily budget", async () => {
+  const f = fixture(Date.parse("2026-10-30T01:00:00+08:00"));
+  const outcome: Outcome = {
+    status: "failed",
+    reason: "upstream",
+    failure: { category: "http", httpStatus: 403, stage: "inspect", durationMs: 1 },
+  };
+  try {
+    const user = await f.store.enroll(credential());
+    const delays = [300_000, 1200_000, 3600_000, 7200_000];
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const job = (await f.store.claim())!;
+      assert.ok(job);
+      const now = f.store.now();
+      assert.equal(await f.store.finish(job.id, job.lease, job.credential.version, outcome), true);
+      const today = (await f.store.dashboard(user))!.today!;
+      assert.equal(today.attempts, attempt);
+      assert.equal(today.status, attempt < 5 ? "queued" : "failed");
+      assert.equal(await f.store.claim(), null);
+      if (attempt < 5) {
+        const retryAt = f.store.nextRetryAt!;
+        assert.ok(retryAt >= now + delays[attempt - 1]);
+        assert.ok(retryAt <= now + delays[attempt - 1] * 2);
+        assert.equal(
+          f.db.prepare("SELECT retry_at FROM job_attempts WHERE id=?").get(job.lease)!.retry_at,
+          retryAt,
+        );
+        f.advance(retryAt - now);
+      } else {
+        assert.equal(f.store.nextRetryAt, null);
+      }
+    }
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM job_attempts").get()!.n, 5);
+  } finally {
+    f.close();
+  }
 });
 
 test("retry cannot run into the next Beijing day and Cron does not reset failed attempts", async () => {
@@ -166,9 +208,9 @@ test("attempts persist across retries, duplicate delivery and terminal success",
     });
     const row = f.db.prepare("SELECT * FROM jobs").get()!;
     assert.ok(Number(row.available_at) - Number(row.updated_at) >= 300_000);
-    assert.ok(Number(row.available_at) - Number(row.updated_at) <= 360_000);
+    assert.ok(Number(row.available_at) - Number(row.updated_at) <= 600_000);
     assert.equal(await f.store.claim(), null);
-    f.advance(360_000);
+    f.advance(600_000);
     const second = (await f.store.claim())!;
     await f.store.finish(second.id, second.lease, second.credential.version, completed);
     const attempts = f.db.prepare("SELECT * FROM job_attempts ORDER BY started_at").all();

@@ -127,7 +127,7 @@ Tunnel 从 VPS 主动连接 Cloudflare，容器之间使用项目独立网络，
 生产使用 `EXECUTOR_ENABLED=true` 和 `DAILY_EXECUTOR=cloudflare`。前者控制新登录及活动路由，后者控制每日任务通知并禁用旧 `/internal/claim` 入口；执行 Worker 的 `DAILY_ENABLED=true` 控制投递和消费。这三个开关用于分阶段切换，不要只改其中一个就认为迁移完成。
 
 1. 备份 D1、原 Worker 版本与 VPS 配置，应用 `0003_cloudflare_queue.sql`。它只新增投递字段及索引，不改凭据格式。已有安装不要重新生成 `CREDENTIAL_KEY`。
-2. 创建 `heybox-daily-tasks` 和 `heybox-daily-dead`，先以 `DAILY_ENABLED=false` 部署 `apps/executor`。Wrangler 创建 SQLite Durable Object 类并配置队列。主队列每批 1 条、初始最大并发 8；调整 `max_concurrency` 后重新部署，依据排队时间、429 和失败率逐步评估，程序不会自行加压。
+2. 创建 `heybox-daily-tasks` 和 `heybox-daily-dead`，先以 `DAILY_ENABLED=false` 部署 `apps/executor`。Wrangler 创建 SQLite Durable Object 类并配置队列。主队列每批 1 条、最大并发 6；调整 `max_concurrency` 后重新部署，或通过 Queues API 更新消费者并同步本地配置，依据排队时间、429 和失败率逐步评估，程序不会自行加压。
 3. 将原 `CREDENTIAL_KEY` 和 `RUNNER_SERVICE_TOKEN` 配置为执行 Worker Secret；生成独立 `TOKEN_SERVICE_TOKEN`，只共享给执行 Worker 和 VPS 令牌服务。网站不持有凭据密钥。Secret 使用交互输入或受保护的 stdin，不放在源码或命令参数中。
 4. 以 Dockerfile 的 `token-service` target 启动 `compose.token.yaml`，环境文件只包含 `TOKEN_SERVICE_TOKEN`、`HOST`、`PORT`。Tunnel 的 `heybox-token.cansiny.top` 指向 `http://token:8789`。令牌服务和 cloudflared 需要共享 Docker 网络；本实例令牌 Compose 加入已有的 `heybox-hosted_default` 外部网络，复用原 Tunnel 容器。
 5. 部署带 `EXECUTOR` Service Binding 的网站，先保持旧路由。检查内部健康接口和只读任务状态，再将 `EXECUTOR_ENABLED` 设为 `true`。新挑战由 Worker 处理，旧挑战按签名 Cookie 记录的后端继续完成；切换至少 5 分钟后再停旧 runner。
@@ -275,7 +275,9 @@ pnpm --filter @heybox/web run deploy
 
 升级时先应用上述索引迁移，再更新 runner 和发布网站。领取响应仍为原来的任务或 `null`，空响应通过 `Retry-After` 告知下一次检查时间；新 runner 遇到旧网站未提供该响应头时仍每 10 秒检查，旧 runner 也能读取新网站返回的任务。
 
-每日任务每个账号每天最多执行 5 次（含首次），实际领取才计数；重复消息、手动重新排队、重新登录和恢复托管不清零。网络、超时及 HTTP 5xx/408 失败后依次等待 5、20、60 分钟，此后每次 2 小时；HTTP 429 或明确业务限流依次等待 15、30、60 分钟，此后每次 2 小时，且不短于有效的 `Retry-After`。每次增加 0–60 秒随机延迟。次数耗尽或跨北京时间日期即停止，次日新任务获得新预算。人机验证、协议变化及明确拒绝不自动反复执行。登录失效会暂停，不会自动发送短信。延后等待不占执行并发，页面等待期间每分钟刷新，到期或运行中每 5 秒刷新。
+每日任务每个账号每天最多执行 5 次（含首次），实际领取才计数；重复消息、手动重新排队、重新登录和恢复托管不清零。网络、超时及 HTTP 5xx/408/403 的四次重试分别随机等待 5–10、20–40、60–120、120–240 分钟；HTTP 429 或明确业务限流分别等待 15–30、30–60、60–120、120–240 分钟。有效的 `Retry-After` 是等待下限，随机时间从本次失败结束时计算并持久化，不会在扫描时重新抽取。次数耗尽或跨北京时间日期即停止，次日新任务获得新预算。人机验证、协议变化及明确拒绝不自动反复执行。登录失效会暂停，不会自动发送短信。延后等待不占执行并发，页面等待期间每分钟刷新，到期或运行中每 5 秒刷新。
+
+`0006_daily_start_pacing.sql` 增加全局启动门槛与投递时间槽。每日任务最多 6 个并发执行，全局每 4 秒最多领取并启动一个任务，空闲期间不积攒额度。启动资格、领取计次和尝试记录在同一 D1 事务中处理；首次、自动重试及手动重新投递共用门槛。最多保留 32 个已预留、已投递或运行中的任务，其余留在 D1；消费者再次校验门槛，延迟送达或重复消息不会突破速率，也不扣尝试次数。门槛限制任务启动，不直接限制单次执行内部的 HTTP 请求。投递预留在时间槽后 60 秒到期，成功投递后从时间槽起至少保留一小时。
 
 `0005_daily_attempts.sql` 新增 `job_attempts`，以租约 ID 作为尝试 ID。实际领取与尝试开始记录、结果与尝试结束记录分别在 D1 事务中提交；消息重复投递不计次。租约丢失记录为 `unknown`，按超时规则退避，旧执行结果不能覆盖新尝试。每次失败保存类别、阶段、接口路径、HTTP/业务状态码、耗时、下一次重试时间，后一次成功不覆盖前一次记录。新错误记录不包含凭据、查询参数、原始响应或错误 cause；保留线上已有的独立签到诊断行为。任务及尝试记录保留 30 天，删除账号时级联删除。
 

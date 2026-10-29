@@ -6,15 +6,12 @@ import type { Env } from './env.ts';
 export async function dispatchDue(env: Pick<Env, 'DB' | 'DAILY_QUEUE' | 'DAILY_ENABLED'>) {
   if (env.DAILY_ENABLED !== 'true') return 0;
   const store = new Store(env.DB);
-  let count = 0;
-  // Bound each invocation; the next minute continues a larger backlog.
-  for (let page = 0; page < 10; page++) {
-    const messages = await store.reserveDispatch();
-    if (!messages.length) break;
-    await env.DAILY_QUEUE.sendBatch(messages.map(body => ({ body })));
+  const messages = await store.reserveDispatch();
+  if (messages.length) {
+    await env.DAILY_QUEUE.sendBatch(messages.map(({ id, token, delaySeconds }) => ({ body: { id, token }, delaySeconds })));
     await store.markDispatched(messages[0].token);
-    count += messages.length;
   }
+  const count = messages.length;
   if (count) console.log(JSON.stringify({ event: 'executor_dispatched', count }));
   return count;
 }
@@ -35,7 +32,11 @@ export async function consume(batch: MessageBatch<unknown>, env: Env, execute: (
         message.ack(); continue;
       }
       const job = await store.claimQueued(parsed.data);
-      if (!job) { message.ack(); continue; }
+      if (!job) {
+        if (store.nextStartAt !== null) message.retry({ delaySeconds: Math.max(1, Math.ceil((store.nextStartAt - store.now()) / 1000)) });
+        else message.ack();
+        continue;
+      }
       let result: Outcome & { category?: string };
       try { result = await execute(job, env.CREDENTIAL_KEY, store); }
       catch { result = { status: 'failed', reason: 'upstream', uncertain: true, failure: { category: 'internal', stage: 'execute', durationMs: Math.round(performance.now() - started) } }; }
